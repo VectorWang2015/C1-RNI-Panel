@@ -20,6 +20,9 @@ namespace RniPanel {
         public string Icc { get; set; }
         public int Strength { get; set; }
         public bool IccExists { get; set; }
+        // Native C1 tree path, including the RNI root. Unlike Name this remains
+        // distinct for standard/grain editions which share the same label.
+        public string[] NativePath { get; set; }
     }
     public sealed class FilmFamily {
         public string Id { get; set; }
@@ -80,7 +83,7 @@ namespace RniPanel {
                         string key = Normalize(root + "|" + familyFolder + "|" + baseName);
                         FilmFamily family;
                         if (!groups.TryGetValue(key, out family)) {
-                            string classification = (folder + " " + root).ToLowerInvariant();
+                            string classification = (folder + " " + root + " " + baseName).ToLowerInvariant();
                             family = new FilmFamily { Id = HashText(key).Substring(0, 24), Name = baseName, Folder = folder,
                                 Category = folder.Split('\\', '/')[0], Grain = classification.Contains("颗粒") || classification.Contains("grain"),
                                 Rendered = classification.Contains("jpeg") || classification.Contains("jpg") || classification.Contains("tiff") };
@@ -89,8 +92,12 @@ namespace RniPanel {
                         if (family.At(strength) != null) { result.Warnings.Add("重复强度未自动覆盖：" + file); continue; }
                         bool profileExists = File.Exists(System.IO.Path.Combine(appRoot, "Color Profiles", "Common", icc)) ||
                             File.Exists(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CaptureOne", "Color Profiles", icc));
+                        var nativePath=new List<string> { System.IO.Path.GetFileName(root.TrimEnd('\\','/')) };
+                        nativePath.AddRange((System.IO.Path.GetDirectoryName(file.Substring(root.Length).TrimStart('\\','/'))??"")
+                            .Split(new[]{'\\','/'},StringSplitOptions.RemoveEmptyEntries));
+                        nativePath.Add(name);
                         family.Styles.Add(new FilmStyle { Path = file, Name = name, Uuid = parsed.ToString("B").ToUpperInvariant(), Icc = icc,
-                            Strength = strength, IccExists = profileExists });
+                            Strength = strength, IccExists = profileExists, NativePath=nativePath.ToArray() });
                         result.FileCount++;
                     } catch (Exception e) { result.Warnings.Add(System.IO.Path.GetFileName(file) + "：" + e.Message); }
                 }
@@ -144,25 +151,38 @@ namespace RniPanel {
         public FilmStyle Style;
         public int Shortcut;
         public string Display;
+        public string[] NativePath {get{return Style==null?null:Style.NativePath;}}
+        public bool UsesNativeTree {get{return Shortcut==0;}}
     }
     public static class Shortcuts {
         public const string SetName = "RNI Panel Demo";
         public static string DirectoryPath { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CaptureOne", "CustomCommands"); } }
         public static string InstalledPath { get { return System.IO.Path.Combine(DirectoryPath, SetName + ".xml"); } }
         public static List<StyleBinding> CreateBindings(StyleCatalog catalog) {
+            return CreateBindings(catalog,InstalledPath);
+        }
+        public static List<StyleBinding> CreateBindings(StyleCatalog catalog,string shortcutPath) {
             var result = new List<StyleBinding>();
-            int key = 116; // VK_F5; combines WinForms.Keys.Control | Alt | Shift.
-            foreach (var name in new [] { "Kodak Portra 160", "Kodak Portra 400" }) {
-                var choices = catalog.Families.Where(f => f.Name == name && !f.Grain && !f.Rendered).ToArray();
-                if (choices.Length != 1) throw new InvalidDataException("常规样式不能唯一识别：" + name);
-                foreach (int level in new [] {25, 50, 75, 100}) {
-                    var style = choices[0].At(level);
-                    if (style == null || !style.IccExists) throw new InvalidDataException("缺少样式或 ICC：" + name + " " + level);
-                    result.Add(new StyleBinding { FamilyId = choices[0].Id, Style = style, Shortcut = 458752 | key, Display = "Ctrl+Alt+Shift+F" + (key - 111) });
-                    key++;
+            XDocument shortcuts=null;
+            if(!String.IsNullOrWhiteSpace(shortcutPath)&&File.Exists(shortcutPath))shortcuts=Catalog.ReadXml(shortcutPath);
+            foreach (var family in catalog.Families) {
+                foreach(var style in family.Styles.Where(s=>s.IccExists).OrderBy(s=>s.Strength)) {
+                    int shortcut=0;
+                    if(shortcuts!=null) {
+                        var matches=shortcuts.Descendants("AdvancedCommand").Where(e=>(string)e.Attribute("AdvancedCommandGroup")=="ApplyStyle"&&
+                            SameUuid((string)e.Attribute("AdvancedCommandItem"),style.Uuid)).ToArray();
+                        int key;
+                        if(matches.Length==1&&Int32.TryParse((string)matches[0].Attribute("CommandShortcut"),out key)&&key!=0&&
+                            shortcuts.Descendants().Count(e=>(int?)e.Attribute("CommandShortcut")==key)==1)shortcut=key;
+                    }
+                    result.Add(new StyleBinding { FamilyId=family.Id,Style=style,Shortcut=shortcut,
+                        Display=shortcut==0?"C1 原生样式树":"已安装原生快捷键" });
                 }
             }
             return result;
+        }
+        static bool SameUuid(string first,string second) {
+            Guid a,b;return Guid.TryParse(first,out a)&&Guid.TryParse(second,out b)&&a==b;
         }
         public static XDocument BuildSet(string source, IEnumerable<StyleBinding> bindings) {
             var xml = Catalog.ReadXml(source);
@@ -171,9 +191,9 @@ namespace RniPanel {
             // in the default XML. Materialize them when cloning that default set.
             if (System.IO.Path.GetFileNameWithoutExtension(source) == "CaptureOne Default") PreserveDefaultAdvanced(xml);
             var used = new HashSet<int>(xml.Descendants().Attributes("CommandShortcut").Select(a => int.Parse(a.Value, CultureInfo.InvariantCulture)).Where(k => k != 0));
-            var array = bindings.ToArray();
-            if (array.Select(b => b.Shortcut).Distinct().Count() != array.Length) throw new InvalidDataException("演示键位重复。");
-            if (array.Any(b => used.Contains(b.Shortcut))) throw new InvalidDataException("演示键位与来源键集冲突，未生成。");
+            var array = bindings.Where(b=>b.Shortcut!=0).ToArray();
+            if (array.Select(b => b.Shortcut).Distinct().Count() != array.Length) throw new InvalidDataException("样式键位重复。");
+            if (array.Any(b => used.Contains(b.Shortcut))) throw new InvalidDataException("样式键位与来源键集冲突，未生成。");
             var advanced = xml.Root.Element("AdvancedCommands");
             if (advanced == null) { advanced = new XElement("AdvancedCommands"); xml.Root.Add(advanced); }
             foreach (var binding in array) advanced.Add(new XElement("AdvancedCommand", new XAttribute("AdvancedCommandGroup", "ApplyStyle"),
@@ -210,15 +230,21 @@ namespace RniPanel {
         }
         public static bool Verify(string path, IEnumerable<StyleBinding> bindings, out string reason) {
             try {
-                var xml = Catalog.ReadXml(path);
+                var all=bindings.ToArray();
+                var shortcutBindings=all.Where(b=>b.Shortcut!=0).ToArray();
+                var xml = shortcutBindings.Length==0?null:Catalog.ReadXml(path);
                 foreach (var binding in bindings) {
+                    if (!File.Exists(binding.Style.Path)) throw new InvalidDataException("样式文件已移除，请重开面板重新扫描。");
+                    if(binding.Shortcut==0) {
+                        if(binding.NativePath==null||binding.NativePath.Length<2)throw new InvalidDataException("原生样式路径不完整："+binding.Style.Name);
+                        continue;
+                    }
                     var nodes = xml.Descendants("AdvancedCommand").Where(e => (string)e.Attribute("AdvancedCommandGroup") == "ApplyStyle" &&
-                        String.Equals((string)e.Attribute("AdvancedCommandItem"), binding.Style.Uuid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                        SameUuid((string)e.Attribute("AdvancedCommandItem"),binding.Style.Uuid)).ToArray();
                     if (nodes.Length != 1 || (int?)nodes[0].Attribute("CommandShortcut") != binding.Shortcut) throw new InvalidDataException("样式绑定不一致：" + binding.Style.Name);
                     if (xml.Descendants().Where(e => (int?)e.Attribute("CommandShortcut") == binding.Shortcut).Count() != 1) throw new InvalidDataException("快捷键存在重复目标。");
-                    if (!File.Exists(binding.Style.Path)) throw new InvalidDataException("样式文件已移除，请重开面板重新扫描。");
                 }
-                reason = "8 个样式绑定可用"; return true;
+                reason = all.Length+" 个样式入口（"+shortcutBindings.Length+" 个快捷键，其余走原生样式树；运行时仍须确认控件）"; return true;
             } catch (Exception e) { reason = e.Message; return false; }
         }
     }
@@ -261,6 +287,17 @@ namespace RniPanel {
             if(armed==null) return "尚未确定本次照片。";
             string basic=Check(target,armed.VariantId,armed.Title);
             if(basic!=null)return basic;
+            return CheckPrimary(target,armed);
+        }
+        // This identity check does not authorize multi-edit. The batch adapter
+        // must independently read C1's Edit All Selected Variants state as OFF
+        // immediately before each command. Do not substitute a fake Count=1.
+        public static string CheckPrimary(TargetSnapshot target,TargetSnapshot armed) {
+            if(armed==null)return "尚未确定本次主图。";
+            string basic=CheckDocument(target,armed);
+            if(basic!=null)return basic;
+            if(target.SelectedCount<1||target.SelectedCount!=armed.SelectedCount)return "本次选区数量已改变，未发送。";
+            if(target.VariantId<=0||target.VariantId!=armed.VariantId)return "执行期间主图已改变，本次未发送。";
             if(target.Handle!=armed.Handle||target.ProcessId!=armed.ProcessId||target.ProcessStartTicks!=armed.ProcessStartTicks)
                 return "C1 窗口或进程已更换，请重新连接。";
             if(String.IsNullOrWhiteSpace(target.DocumentPath)||!String.Equals(target.DocumentPath,armed.DocumentPath,StringComparison.OrdinalIgnoreCase))
@@ -279,11 +316,16 @@ namespace RniPanel {
     }
     public static class SelectionSummary {
         public static bool IsSingle(string text) {
+            int selected;
+            return TryCount(text,out selected)&&selected==1;
+        }
+        public static bool TryCount(string text,out int selected) {
+            selected=0;
             var match=Regex.Match(text??"",@"^\s*(\d[\d,\u00a0 ]*)\s*/\s*(\d[\d,\u00a0 ]*)\s*(?:\([^)]*\)|（[^）]*）)?\s*$");
             if(!match.Success)return false;
-            int selected,total;
+            int total;
             Func<string,string> digits=value=>Regex.Replace(value,@"[,\s]","");
-            return Int32.TryParse(digits(match.Groups[1].Value),out selected)&&Int32.TryParse(digits(match.Groups[2].Value),out total)&&selected==1&&total>=1;
+            return Int32.TryParse(digits(match.Groups[1].Value),out selected)&&Int32.TryParse(digits(match.Groups[2].Value),out total)&&selected>=0&&total>=selected&&total>=1;
         }
     }
     public sealed class AttemptGate {
@@ -300,9 +342,9 @@ namespace RniPanel {
             if(activeStyles==null)throw new InvalidOperationException("无法读取 C1 当前样式，未发送。");
             var active=activeStyles.ToArray();
             var known=new HashSet<string>(supported??Enumerable.Empty<string>(),StringComparer.Ordinal);
-            if(String.IsNullOrWhiteSpace(requested)||!known.Contains(requested))throw new InvalidOperationException("请求不在已连接的演示样式内，未发送。");
+            if(String.IsNullOrWhiteSpace(requested)||!known.Contains(requested))throw new InvalidOperationException("请求不在已索引的 RNI 样式内，未发送。");
             if(active.Length>1)throw new InvalidOperationException("C1 存在多个已应用样式或预设，暂不自动替换混合效果，未发送。");
-            if(active.Length==1&&!known.Contains(active[0]))throw new InvalidOperationException("当前样式不是已连接的演示样式，未发送。");
+            if(active.Length==1&&!known.Contains(active[0]))throw new InvalidOperationException("当前样式不是已识别的 RNI 样式，未发送。");
             return active.Length==0||!String.Equals(active[0],requested,StringComparison.Ordinal);
         }
     }
@@ -325,6 +367,7 @@ namespace RniPanel {
     public sealed class StyleClearResult {
         public bool Sent;
         public string RemovedStyle;
+        public string[] RemovedStyles;
     }
     public static class StyleClearWorkflow {
         static void RequireCurrent(IClearStyleSession session) {
@@ -337,20 +380,123 @@ namespace RniPanel {
             var before=await session.ReadAppliedStyles();
             RequireCurrent(session);
             if(before==null)throw new InvalidOperationException("未读到当前样式，未清除。");
-            if(before.Length>1)throw new InvalidOperationException("当前有多个样式或预设，暂不一起清除；未发送。");
-            if(before.Length==1&&!(supported??Enumerable.Empty<string>()).Contains(before[0],StringComparer.Ordinal))
-                throw new InvalidOperationException("当前不是面板支持的 RNI 样式，未清除。");
+            var known=new HashSet<string>(supported??Enumerable.Empty<string>(),StringComparer.Ordinal);
+            var remove=before.Where(known.Contains).ToArray();
+            if(remove.Distinct(StringComparer.Ordinal).Count()!=remove.Length)
+                throw new InvalidOperationException("当前 RNI 样式身份重复，无法安全逐项清除；未发送。");
             await session.ValidateTarget();
             RequireCurrent(session);
-            if(before.Length==0)return new StyleClearResult {Sent=false};
-            await session.RemoveCurrentStyle(before[0]); // Intentional native toggle, once only; never reset all adjustments.
+            if(remove.Length==0)return new StyleClearResult {Sent=false,RemovedStyles=new string[0]};
+            var remaining=before.ToList();
+            foreach(string identity in remove) {
+                await session.RemoveCurrentStyle(identity); // Remove this RNI only, never reset all adjustments.
+                RequireCurrent(session);
+                remaining.Remove(identity);
+                var after=await session.ReadAppliedStyles();
+                RequireCurrent(session);
+                await session.ValidateTarget();
+                RequireCurrent(session);
+                if(after==null||!remaining.SequenceEqual(after,StringComparer.Ordinal))
+                    throw new InvalidOperationException("已发送清除，但未确认只移除了目标 RNI；已停止，不会自动重发。其他调整未被主动重置。");
+            }
+            return new StyleClearResult {Sent=true,RemovedStyle=String.Join("、",remove),RemovedStyles=remove};
+        }
+    }
+    // Batch never sends a toggle to a heterogeneous selection. The adapter must
+    // make C1 edit only its primary variant; each item then uses the same native
+    // read/decision/confirmation workflow as a single photo.
+    public interface IBatchStyleSession {
+        bool IsCurrent {get;}
+        Task<TargetSnapshot> InspectPrimary();
+        Task BeginPrimaryOnly();
+        Task SelectFirst();
+        Task SelectNext();
+        Task<bool> ExecutePrimary(TargetSnapshot expected);
+        Task RestoreEditMode();
+    }
+    public sealed class BatchStyleResult {
+        public int Total;
+        public int Confirmed;
+        public int Sent;
+        public bool PrimaryRestored;
+        public bool EditModeRestored;
+    }
+    public sealed class BatchStyleException:InvalidOperationException {
+        public BatchStyleResult Result {get;private set;}
+        public BatchStyleException(BatchStyleResult result,Exception inner):base(
+            "批量已停止：已确认 "+result.Confirmed+"/"+result.Total+" 张（发送 "+result.Sent+" 张）。"+
+            "未确认的当前照片不会自动重试。"+(result.EditModeRestored?"":"编辑模式可能仍为仅主图；请查看 C1。")+" "+inner.Message,inner) {Result=result;}
+    }
+    public static class BatchStyleWorkflow {
+        static void RequireCurrent(IBatchStyleSession session) {
+            if(!session.IsCurrent)throw new OperationCanceledException("批量已取消，不继续导航或发送。");
+        }
+        static void CheckPrimary(TargetSnapshot current,TargetSnapshot original,TargetSnapshot planned) {
+            string reason=SafetyPolicy.CheckDocument(current,original);
+            if(reason!=null)throw new InvalidOperationException(reason);
+            if(current.SelectedCount!=original.SelectedCount)throw new InvalidOperationException("批量选区数量已改变，已停止。");
+            if(current.VariantId<=0||String.IsNullOrWhiteSpace(current.VariantUuid))
+                throw new InvalidOperationException("不能唯一识别当前主图，已停止。");
+            if(planned!=null&&(current.VariantId!=planned.VariantId||!String.Equals(current.VariantUuid,planned.VariantUuid,StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("当前主图与本次锁定选区不一致，已停止。");
+        }
+        static async Task<TargetSnapshot> Read(IBatchStyleSession session,TargetSnapshot original,TargetSnapshot planned) {
             RequireCurrent(session);
-            var after=await session.ReadAppliedStyles();
+            var current=await session.InspectPrimary();
             RequireCurrent(session);
-            await session.ValidateTarget();
-            RequireCurrent(session);
-            if(after==null||after.Length!=0)throw new InvalidOperationException("已发送清除，但未确认样式列表为空；已停止，不会自动重发。");
-            return new StyleClearResult {Sent=true,RemovedStyle=before[0]};
+            CheckPrimary(current,original,planned);
+            return current;
+        }
+        public static async Task<BatchStyleResult> Run(IBatchStyleSession session,Action<int,int,TargetSnapshot,bool> confirmed=null) {
+            var result=new BatchStyleResult();
+            try {
+                RequireCurrent(session);
+                var original=await session.InspectPrimary();
+                RequireCurrent(session);
+                if(original==null||original.SelectedCount<2)throw new InvalidOperationException("批量需要至少两张已选照片。");
+                if(!SafetyPolicy.IsAllowedCatalog(original.DocumentPath))throw new InvalidOperationException("当前不是支持的图库，未开始批量。");
+                CheckPrimary(original,original,original);
+                result.Total=original.SelectedCount;
+                await session.BeginPrimaryOnly();
+                RequireCurrent(session);
+                await session.SelectFirst();
+                var plan=new List<TargetSnapshot>();
+                for(int i=0;i<result.Total;i++) {
+                    var item=await Read(session,original,null);
+                    if(plan.Any(p=>String.Equals(p.VariantUuid,item.VariantUuid,StringComparison.OrdinalIgnoreCase)))
+                        throw new InvalidOperationException("原生主图导航没有覆盖完整选区，未开始批量应用。");
+                    plan.Add(item);
+                    if(i+1<result.Total) {RequireCurrent(session);await session.SelectNext();}
+                }
+                int originalIndex=plan.FindIndex(p=>p.VariantId==original.VariantId&&String.Equals(p.VariantUuid,original.VariantUuid,StringComparison.OrdinalIgnoreCase));
+                if(originalIndex<0)throw new InvalidOperationException("选区中缺少原主图，未开始批量应用。");
+                RequireCurrent(session);
+                await session.SelectFirst();
+                for(int i=0;i<plan.Count;i++) {
+                    var current=await Read(session,original,plan[i]);
+                    bool sent=await session.ExecutePrimary(current);
+                    RequireCurrent(session);
+                    await Read(session,original,plan[i]);
+                    result.Confirmed++;
+                    if(sent)result.Sent++;
+                    if(confirmed!=null)confirmed(result.Confirmed,result.Total,current,sent);
+                    if(i+1<plan.Count) {RequireCurrent(session);await session.SelectNext();}
+                }
+                // Restore only through the already validated sequence. On any
+                // cancellation or unknown native outcome leave the current photo
+                // in place so the user can inspect it; never move blindly.
+                RequireCurrent(session);
+                await session.SelectFirst();
+                for(int i=0;i<=originalIndex;i++) {
+                    await Read(session,original,plan[i]);
+                    if(i<originalIndex) {RequireCurrent(session);await session.SelectNext();}
+                }
+                result.PrimaryRestored=true;
+                RequireCurrent(session);
+                await session.RestoreEditMode();
+                result.EditModeRestored=true;
+                return result;
+            } catch(Exception e) {throw new BatchStyleException(result,e);}
         }
     }
     public static class StyleWorkflow {

@@ -4,28 +4,40 @@ A small, single-user Windows companion for Capture One: film search, favorites, 
 
 This is an independent helper, not an embedded Capture One plugin. Capture One and the RNI styles must already be installed and licensed. No vendor ICC profiles, styles, program files, catalog data, or photographs are included.
 
-## Current version: 0.5
+## Current development version: 0.6
 
-- **Clear RNI** removes the currently applied, supported RNI style through one native toggle; it never resets all adjustments. An empty applied list is a no-op, and unknown/mixed stacks are not cleared.
-- **No automatic tab switching.** Add and expand Capture One's **Styles and Presets** tool in the **Library** tab once, keeping it visible. The palette reads that tool directly; if it is absent/collapsed, it prompts rather than switching tabs.
-- Connect the current work catalog once, then apply to its **currently selected single photo**.
-- No need to filter the browser down to `1/1`; `1/N` is supported when the viewer and globally unique catalog record agree.
-- Each click fixes its own target for the entire operation. Changing photos during an operation, changing catalogs, a modal, or lost focus stops that operation.
-- Read Capture One's live applied-style list before sending a native shortcut. Clicking the current strength does nothing, so it cannot toggle the style off.
-- Read the native result after sending. Never automatically retry a style command whose result is uncertain.
-- Search and favorite the installed collection. Only standard RAW Portra 160 and Portra 400 are currently connected, for eight working buttons; the default filter shows these connected films.
-- Favorites and window placement are shared across upgrades in `%LOCALAPPDATA%\RniPalette`. A bundled favorites file is only imported when no shared state exists.
-- No routine program, photograph, catalog, or style-file checksum scans.
+The first requirement is a quick film-style entry point for Capture One: select photos, click a film strength, or clear the current RNI effect. Version 0.5 was not accepted as usable: its first visible-style observation timed out before any style command was sent. Version 0.6 addresses that reader and removes the eight-command execution limit. Implementation and live validation are recorded separately below.
+
+- The full installed collection is indexed by UUID and exact native tree path. On the development installation this is 1,680 styles / 426 families. Existing native shortcuts are discovered from their saved UUID mappings; other styles are addressed through the native style tree, not merely unlocked buttons.
+- Standard and grain styles can have identical names but different UUIDs. Requests use the exact installed source path. Existing applied entries are matched to installed RNI names; where source-tree checks cannot distinguish a version, the internal `rni-name:` token means **name-recognized RNI, not UUID-proven**. Capture One's lazily created source checkboxes can initially be Off even while that style is applied.
+- **Clear RNI** removes each uniquely located, name-recognized RNI row through its native Clear from Background action and verifies the remaining style/preset list. It never invokes reset-all. A list without recognized RNI is a no-op; duplicate applied rows that cannot be uniquely targeted stop the operation. Clearing that exact native row does not require guessing its standard/grain UUID.
+- **Single and multiple selection entry points.** The batch adapter temporarily switches to primary-only editing, enumerates the selected primary identities through native First/Next navigation, then runs the single-photo workflow for each item. It does not send one toggle to a heterogeneous selection. Successful completion restores the initial primary photo and editing mode.
+- Connect a supported catalog once by confirming its complete path. Selecting different photos within it does not require reconnection. Each operation locks and revalidates its own target identities.
+- Before any style change, read the live native state. An independently recognized current target can be a no-op; when the existing version is unresolved, remove its exact RNI row and reapply the requested source path. Thus a repeated click leaves the requested effect present, but is not always a no-send operation. Read again after sending. A sent command is not reported as confirmed until the native result matches, and an uncertain command is never automatically retried.
+- **No automatic tool-tab switching.** The visible Styles and Presets tool is read directly. Source-tree expansion can move its scroll position. Missing, hidden, collapsed, unreadable and genuinely empty lists are reported separately; the program does not interpret a reader failure as an empty list.
+- Style observations cache the specific tool subtree rather than repeating whole-window scans. One UIA reader is allowed in flight; an eight-second timeout cannot cancel a blocked provider, so the old worker remains isolated and subsequent requests cannot pile up behind it.
+- Cancel the connection, press Esc or close the palette to stop subsequent actions. A batch interruption reports its confirmed prefix and leaves the current primary in place for inspection; editing mode may remain primary-only.
+- Favorites and window placement remain shared across upgrades in `%LOCALAPPDATA%\RniPalette`. Existing shared state is never replaced by a bundled seed. Old releases and their executables are not overwritten.
 
 ### Limits
 
 The current configuration is specific to the owner's Windows Capture One installation and explicitly named Photography-Master work catalog / RNI-Panel-Sandbox. Startup is always preview-only; the user must confirm the actual catalog path before enabling application.
 
-Multiple selections, ambiguous filenames, multiple variants of one image, comparison viewers, unknown existing styles and mixed style stacks are deliberately unsupported. The helper never writes the catalog database itself or changes original image files. There is no automatic restoration of historical Lightroom edits.
+The viewer must expose one unique primary photo, including during a multi-selection. Ambiguous filenames, multiple variants of one image and comparison viewers cannot yet be identified safely. Application refuses unknown or mixed existing style stacks rather than silently replacing unrelated effects. Clear identifies RNI rows by exact installed display names and leaves unrelated rows alone; it does not claim that every initial RNI row's UUID is available. A locally created unrelated style with an identical RNI name cannot be distinguished from that name alone.
 
-Existing local Capture One prerequisites: `RNI Panel Demo` key set, native Styles replacement mode enabled, and metadata auto-sync disabled. The app does not silently install or change these settings.
+Clear-then-apply is a sequence of native GUI actions, not an atomic transaction. If application fails after removal, the old RNI may already be gone; the failure must be inspected and is never silently retried. Post-application confirmation combines this operation's exact requested source path with the native applied-name readback. It is not a claim that the applied-list control exposes a UUID, nor a permanent identity cache across later native edits.
 
-For the one-time no-tab-switch layout, right-click within the Library tool tab, choose **Add Tool → Styles and Presets**, and keep the tool expanded. This is a native workspace customization, not a plugin installation. See [Capture One's tool instructions](https://support.captureone.com/hc/en-us/articles/360003159377-How-do-I-add-a-floating-tool).
+The native Styles replacement mode must be enabled for application and metadata auto-sync must be disabled. The old `RNI Panel Demo` key set is no longer required for native-tree execution. The app does not silently edit Capture One configuration or install keyboard mappings.
+
+The actual document selector, browser/viewer identity controls and Styles and Presets tool must remain available to Windows UI Automation. This is a real GUI dependency, not an official business API. A missing control is a reported limitation, not evidence that the user has no tool or no applied style. There is no automatic restoration of historical Lightroom edits or repeat of the completed photo migration.
+
+### Calling architecture
+
+1. Windows UI Automation reads the native document, selection, applied list and style-tree controls, and invokes supported native UI actions.
+2. `SendInput` dispatches existing native style shortcuts when an applicable saved binding is available; otherwise the exact native style-tree checkbox path is used.
+3. Windows `winsqlite3` opens the catalog read-only solely to disambiguate photo identity. It is not the authority for live style state, and there are no online database writes or original-file changes.
+
+Capture One has a Windows developer SDK, but this project has not established a supported external API for the needed live selection / ApplyStyle / per-style-clear operations. In-process private methods and macOS AppleScript are not treated as Windows external interfaces. See [current architecture notes](docs/architecture-current.md).
 
 ## Build
 
@@ -40,14 +52,22 @@ Use a fresh test output directory for each run: tests intentionally refuse to ov
 
 ## Implementation
 
-- `PanelCore.cs`: index, favorites, shortcut metadata, target policy, and testable apply workflow.
+- `PanelCore.cs`: full style index, favorites, existing shortcut metadata, identity policy, apply/clear workflows and primary-by-primary batch coordinator.
 - `CatalogReader.cs`: Windows `winsqlite3` read-only identity lookup.
-- `NativeBridge.cs`: Windows UI Automation, guarded native shortcut dispatch, and live style readback.
-- `App.cs`: Windows Forms palette and explicit catalog connection.
+- `NativeBridge.cs`: scoped UIA observation, explicit UUID/name-confidence handling, exact-row removal, guarded native shortcut/tree dispatch and result readback.
+- `NativeBatch.cs`: live Edit All Selected Variants state, primary navigation and the batch adapter; no persisted-setting guess for live edit mode.
+- `App.cs`: Windows Forms palette, explicit catalog confirmation, cancellation, progress and local logs.
 
-The user accepted 0.4 operation and favorites, including the earlier native readback / round-trip / repeated-click behavior. Version 0.5 adds clear and direct visible-tool readback; it is compiled and handed to the user for actual-use feedback, without another full regression campaign or agent-driven photo edits.
+### Validation status
 
-Auto-connect and batch application are deferred. Batch research confirmed that native shortcuts toggle off when all affected images already carry the style, while visible style checkmarks describe only the primary image. A future batch workflow must not reuse the single-photo state decision or assume a background context-menu item is an unconditional apply command.
+The user's accepted 0.4 application, intensity switching, repeated-click protection and favorites remain the historical baseline. The failed 0.5 run is not a passed release test.
+
+- 0.6 source and test executable build successfully with the local .NET Framework compiler.
+- 85 core checks pass, including the existing tests plus full-catalog path identity, selective clear, batch preflight and partial failure handling. Four additional optional local catalog-identity fixture checks passed earlier in this development round. These tests do not send Capture One input and do not establish live UI compatibility.
+- Live single-photo validation on Capture One 16.7.8: empty list → Fuji Natura 1600 25% (outside the original eight shortcuts), switch to 50%, repeat 50% without sending, and cold-start clear through the exact native applied row all passed with native list confirmation. No tool-tab switching occurred. Initial cold discovery was about 12 seconds; cached switching about 4 seconds and repeated no-op about 1.6 seconds on this installation, not performance guarantees.
+- Live batch validation: **pending completion by the single sandbox executor**. Only the confirmed sandbox and current selection are used for agent-driven photo tests; the work catalog and original media remain untouched.
+
+Automatic catalog/selection connection remains a later improvement. No further routine test matrix or checksum campaign is required for this personal tool; necessary builds and actual-use feedback are the intended verification level.
 
 ## Development synchronization
 

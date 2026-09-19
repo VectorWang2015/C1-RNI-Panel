@@ -8,3 +8,5 @@
 !src/*.cs
 !tests/
 !tests/CoreTests.cs
+!docs/
+!docs/*.md

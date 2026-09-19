@@ -34,6 +34,38 @@ sealed class FakeLiveSession:ILiveStyleSession {
         if(!KeepOldStyle)Active=new[]{Requested};return Task.FromResult(0);
     }
 }
+sealed class FakeClearSession:IClearStyleSession {
+    public bool IsCurrent {get;set;}
+    public string[] Active;
+    public int Sends;
+    public FakeClearSession(){IsCurrent=true;}
+    public Task ValidateTarget(){return Task.FromResult(0);}
+    public Task<string[]> ReadAppliedStyles(){return Task.FromResult(Active);}
+    public Task RemoveCurrentStyle(string identity){Sends++;Active=Active.Where(s=>s!=identity).ToArray();return Task.FromResult(0);}
+}
+sealed class FakeBatchSession:IBatchStyleSession {
+    public bool IsCurrent {get;set;}
+    public TargetSnapshot[] Items;
+    public int Index=1,Sends;
+    public bool PrimaryOnly,ModeRestored;
+    public int FailOnItem=-1;
+    public FakeBatchSession() {
+        IsCurrent=true;
+        Items=Enumerable.Range(1,3).Select(i=>new TargetSnapshot{Handle=new IntPtr(1),ProcessId=1,ProcessStartTicks=1,
+            Title="RNI-Panel-Sandbox",DocumentPath=SafetyPolicy.DemoCatalogPath,VariantId=i,VariantUuid="identity-"+i,
+            FileName="photo-"+i,SelectedCount=3,Enabled=true}).ToArray();
+    }
+    public Task<TargetSnapshot> InspectPrimary(){return Task.FromResult(Items[Index]);}
+    public Task BeginPrimaryOnly(){PrimaryOnly=true;return Task.FromResult(0);}
+    public Task SelectFirst(){Index=0;return Task.FromResult(0);}
+    public Task SelectNext(){Index=Math.Min(Index+1,Items.Length-1);return Task.FromResult(0);}
+    public Task<bool> ExecutePrimary(TargetSnapshot expected) {
+        if(!PrimaryOnly||expected!=Items[Index])throw new InvalidOperationException("unsafe target");
+        if(Index==FailOnItem)throw new InvalidOperationException("native confirmation failed");
+        Sends++;return Task.FromResult(true);
+    }
+    public Task RestoreEditMode(){PrimaryOnly=false;ModeRestored=true;return Task.FromResult(0);}
+}
 static class Tests {
     static int count;
     static void Check(bool value, string name) { if (!value) throw new Exception("FAIL: " + name); Console.WriteLine("PASS " + name); count++; }
@@ -49,20 +81,26 @@ static class Tests {
         Check(catalog.FileCount > 0 && catalog.Families.Count > 0, "installed styles indexed read-only");
         Check(catalog.Families.All(f => f.Styles.Select(s=>s.Strength).Distinct().Count()==f.Styles.Count), "no duplicate intensity within a family");
         Check(catalog.Families.Any(f=>f.Matches("portra160")), "spaceless film search");
-        var bindings = Shortcuts.CreateBindings(catalog);
-        Check(bindings.Count == 8 && bindings.All(b=>b.Style.IccExists), "two films x four real ICC variants");
-        Check(bindings.Select(b=>b.Style.Uuid).Distinct().Count()==8, "eight distinct source identities");
+        var allBindings = Shortcuts.CreateBindings(catalog);
+        Check(allBindings.Count==catalog.Families.Sum(f=>f.Styles.Count(s=>s.IccExists)),"every installed usable style has an execution binding");
+        Check(allBindings.Select(b=>b.Style.Uuid).Distinct().Count()==allBindings.Count,"all source UUID identities remain distinct");
+        Check(allBindings.All(b=>b.NativePath!=null&&b.NativePath.Length>=3&&b.NativePath.Last()==b.Style.Name),"exact native hierarchy exists for every style");
+        Check(allBindings.GroupBy(b=>b.Style.Name).Where(g=>g.Count()>1).All(g=>g.Select(b=>String.Join("/",b.NativePath)).Distinct().Count()==g.Count()),"same-name standard/grain entries have different native paths");
+        var nativeOnly=Shortcuts.CreateBindings(catalog,null);
+        Check(nativeOnly.Count==allBindings.Count&&nativeOnly.All(b=>b.UsesNativeTree),"full catalog does not require a demo shortcut set");
+        var bindings=allBindings.Where(b=>b.Shortcut!=0).ToList();
+        Check(bindings.Count>0&&bindings.All(b=>b.Style.IccExists),"existing native shortcuts are retained by UUID");
         string source = Path.Combine(Shortcuts.DirectoryPath, "CaptureOne Default.xml");
         string before = File.ReadAllText(source);
         var generated = Shortcuts.BuildSet(source, bindings);
         var original = Catalog.ReadXml(source);
         Check(generated.Descendants("Command").Select(n=>n.ToString()).SequenceEqual(original.Descendants("Command").Select(n=>n.ToString())), "all existing native shortcuts preserved");
         Check(generated.Descendants("SpeedEditCommand").Select(n=>n.ToString()).SequenceEqual(original.Descendants("SpeedEditCommand").Select(n=>n.ToString())), "Speed Edit preserved");
-        Check(generated.Descendants("AdvancedCommand").Count()==18, "ten implicit default bindings preserved alongside eight new ones");
+        Check(generated.Descendants("AdvancedCommand").Count()==10+bindings.Count, "ten implicit default bindings preserved alongside existing RNI bindings");
         string created = Path.Combine(root, "demo.xml");
         Shortcuts.InstallNew(source, created, bindings);
         string reason;
-        Check(Shortcuts.Verify(created, bindings, out reason), "eight advanced commands round-trip");
+        Check(Shortcuts.Verify(created, bindings, out reason), "advanced commands round-trip");
         Throws(()=>Shortcuts.InstallNew(source, created, bindings), "refuse overwriting an existing key set");
         Check(before == File.ReadAllText(source), "source key set unchanged");
         string conflict = Path.Combine(root, "conflict.xml");
@@ -114,7 +152,7 @@ static class Tests {
         nextPhoto.ProcessStartTicks++;
         Check(SafetyPolicy.CheckDocument(nextPhoto,armed)!=null,"catalog connection must be renewed after C1 restarts");
         var gate=new AttemptGate();long permit=gate.Capture();Check(gate.IsCurrent(permit),"active request epoch accepted");gate.Cancel();Check(!gate.IsCurrent(permit),"cancelled request epoch rejected");
-        var demoNames=bindings.Select(b=>b.Style.Name).ToArray();
+        var demoNames=allBindings.Select(b=>b.Style.Uuid).ToArray();
         Check(NativeStylePolicy.NeedsSend(new string[0],demoNames[0],demoNames),"empty native style stack permits first application");
         Check(!NativeStylePolicy.NeedsSend(new[]{demoNames[0]},demoNames[0],demoNames),"already-current native style is an idempotent no-op");
         Check(NativeStylePolicy.NeedsSend(new[]{demoNames[0]},demoNames[1],demoNames),"native A to B transition allowed");
@@ -152,6 +190,20 @@ static class Tests {
         var unreadable=new FakeLiveSession{Active=null,Requested=demoNames[0]};
         Throws<InvalidOperationException>(()=>StyleWorkflow.Run(unreadable,unreadable.Requested,demoNames).GetAwaiter().GetResult(),"missing live observation stops workflow");
         Check(unreadable.Sends==0,"unknown native state never sends");
+        var mixedClear=new FakeClearSession{Active=new[]{"unrelated-preset",demoNames[0],demoNames[1]}};
+        var clearResult=StyleClearWorkflow.Run(mixedClear,demoNames).GetAwaiter().GetResult();
+        Check(clearResult.Sent&&mixedClear.Sends==2&&mixedClear.Active.SequenceEqual(new[]{"unrelated-preset"}),"clear removes only identified RNI entries and preserves unrelated preset");
+        var noRni=new FakeClearSession{Active=new[]{"unrelated-preset"}};
+        Check(!StyleClearWorkflow.Run(noRni,demoNames).GetAwaiter().GetResult().Sent&&noRni.Sends==0,"clear without RNI has no native command");
+        var batch=new FakeBatchSession();
+        var batchResult=BatchStyleWorkflow.Run(batch).GetAwaiter().GetResult();
+        Check(batchResult.Confirmed==3&&batchResult.Sent==3&&batch.Index==1&&batch.ModeRestored,"batch verifies each primary separately and restores original primary/edit mode");
+        var failedBatch=new FakeBatchSession{FailOnItem=1};
+        try {BatchStyleWorkflow.Run(failedBatch).GetAwaiter().GetResult();throw new Exception("expected batch failure");}
+        catch(BatchStyleException e){Check(e.Result.Confirmed==1&&failedBatch.Sends==1&&!failedBatch.ModeRestored&&failedBatch.Index==1,"batch failure reports confirmed prefix and neither retries nor navigates away");}
+        var repeatedBatch=new FakeBatchSession();repeatedBatch.Items[2]=repeatedBatch.Items[1];
+        Throws<BatchStyleException>(()=>BatchStyleWorkflow.Run(repeatedBatch).GetAwaiter().GetResult(),"batch rejects incomplete native navigation during preflight");
+        Check(repeatedBatch.Sends==0,"batch preflight failure sends no styles");
         string badPrefs=Path.Combine(root,"badprefs");Directory.CreateDirectory(badPrefs);string badFile=Path.Combine(badPrefs,"favorites.json");File.WriteAllText(badFile,"{ corrupt original");var badStore=new PreferencesStore(badPrefs);string badOriginal=File.ReadAllText(badFile);Throws(()=>badStore.Load(),"corrupt favorites rejected");Throws(()=>badStore.Save(new PanelPreferences()),"save disabled after failed load");Check(badOriginal==File.ReadAllText(badFile),"corrupt original preserved");
         string external=Path.Combine(root,"xxe.xml");File.WriteAllText(external,"<!DOCTYPE x [<!ENTITY y SYSTEM 'file:///C:/Windows/win.ini'>]><x>&y;</x>");Throws(()=>Catalog.ReadXml(external),"XML external entity rejected");
         string fixtureFile=args.Length>1?args[1]:Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"..","test-fixtures.local.json"));

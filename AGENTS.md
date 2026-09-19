@@ -1,6 +1,6 @@
 # RNI Palette
 
-0.4 is delivered and being tested by the user; 0.3 native readback/round-trip/repeat behavior is accepted. Broader photo context: `D:\照片\AGENTS.md`.
+0.4 use and favorites are user-accepted. Requested next: clear current RNI, auto-follow selection, batch apply, and fewer tab switches; not implemented yet. Broader context: `D:\照片\AGENTS.md`.
 
 ## Work
 

@@ -12,6 +12,9 @@ using System.Windows.Automation;
 using System.Xml.Linq;
 
 namespace RniPanel {
+    public sealed class MultipleViewerException:InvalidOperationException {
+        public MultipleViewerException(int count):base("C1 当前显示 "+count+" 个照片查看器；需要切换为仅显示主变体后再核对当前主图。"){}
+    }
     public sealed class CaptureSettings {
         public string Path;
         public string ShortcutName;
@@ -45,6 +48,7 @@ namespace RniPanel {
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint processId);
+        [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern int GetWindowText(IntPtr window,System.Text.StringBuilder text,int capacity);
         [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
         [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint Type; public INPUTUNION Data; }
         [StructLayout(LayoutKind.Explicit)] struct INPUTUNION {
@@ -96,7 +100,7 @@ namespace RniPanel {
             public void Release() {
                 try{Automation.RemoveStructureChangedEventHandler(root,changed);}catch(ElementNotAvailableException){}
             }
-            public AutomationElement[] Read(out bool reused) {
+            public AutomationElement[] Read(out bool reused,bool selectionOnly=false) {
                 reused=false;
                 for(int attempt=0;attempt<2;attempt++)try {
                     int start=Volatile.Read(ref revision);
@@ -112,7 +116,7 @@ namespace RniPanel {
                         // values captured across that structural change.
                         continue;
                     }
-                    foreach(string id in new[]{"DocumentSelector","MainItemsControl","SummaryText","tb_VariantTitle"})
+                    foreach(string id in selectionOnly?new[]{"DocumentSelector","MainItemsControl","SummaryText"}:new[]{"DocumentSelector","MainItemsControl","SummaryText","tb_VariantTitle"})
                         if(!current.Any(e=>e.Cached.AutomationId==id&&!e.Cached.IsOffscreen)) {
                             controls=null;
                             throw new InvalidOperationException("C1 目标控件已隐藏或布局改变（"+id+"），不能使用旧选区。");
@@ -127,18 +131,19 @@ namespace RniPanel {
         }
         static readonly object targetControlsLock=new object();
         static TargetControlReferences targetControls;
-        static AutomationElement[] ReadTargetControls(TargetSnapshot target,out bool reused) {
+        static AutomationElement[] ReadTargetControls(TargetSnapshot target,out bool reused,bool selectionOnly=false) {
             lock(targetControlsLock) {
                 if(targetControls==null||targetControls.Handle!=target.Handle||targetControls.ProcessStart!=target.ProcessStartTicks) {
                     if(targetControls!=null)targetControls.Release();
                     targetControls=new TargetControlReferences(target);
                 }
-                return targetControls.Read(out reused);
+                return targetControls.Read(out reused,selectionOnly);
             }
         }
         public static TargetSnapshot Inspect(string appRoot) {return InspectCore(appRoot,false);}
         public static TargetSnapshot InspectPrimary(string appRoot) {return InspectCore(appRoot,true);}
-        static TargetSnapshot InspectCore(string appRoot,bool allowMultiple) {
+        public static TargetSnapshot InspectSelection(string appRoot) {return InspectCore(appRoot,true,true);}
+        static TargetSnapshot InspectCore(string appRoot,bool allowMultiple,bool selectionOnly=false) {
             string executable = System.IO.Path.GetFullPath(System.IO.Path.Combine(appRoot,"CaptureOne.exe"));
             var processes = Process.GetProcessesByName("CaptureOne").Where(p=> {
                 try {return p.MainWindowHandle!=IntPtr.Zero && p.MainModule.FileName.Equals(executable,StringComparison.OrdinalIgnoreCase);}catch{return false;}
@@ -152,12 +157,20 @@ namespace RniPanel {
             state.Diagnostics="Enabled="+state.Enabled+"; popup="+popup+"; main="+handle;
             if(!state.Enabled || state.Modal) return state;
             bool reusedControls;
-            var controls=ReadTargetControls(state,out reusedControls);
+            var controls=ReadTargetControls(state,out reusedControls,selectionOnly);
             state.Diagnostics+="; targetControls="+(reusedControls?"references-refreshed":"tree-discovered");
             Func<string,AutomationElement> control=id=>controls.FirstOrDefault(e=>e.Cached.AutomationId==id&&!e.Cached.IsOffscreen);
             state.DocumentPath=GetDocumentPath(control("DocumentSelector"),state.Title);
             var browser=control("MainItemsControl");
             if(browser==null) throw new InvalidOperationException("未找到 C1 照片浏览器；请关闭弹窗并显示浏览器。");
+            if(selectionOnly) {
+                var countControl=control("SummaryText");int count;
+                if(countControl==null||!SelectionSummary.TryCount(countControl.Cached.Name,out count))
+                    throw new InvalidOperationException("不能从 C1 原生摘要确认当前选区数量，未改变查看器。");
+                state.SelectedCount=count;
+                state.Diagnostics+="; summary="+countControl.Cached.Name+"; adapter=selection-count-only; no-primary-identity";
+                return state;
+            }
             object selection;
             AutomationElement[] selected;
             if(browser.TryGetCurrentPattern(SelectionPattern.Pattern,out selection)) selected=((SelectionPattern)selection).Current.GetSelection();
@@ -173,7 +186,8 @@ namespace RniPanel {
             if(knownCount&&summaryCount>=1&&(allowMultiple||summaryCount==1)) {
                 var titles=controls.Where(e=>e.Cached.AutomationId=="tb_VariantTitle"&&!e.Cached.IsOffscreen&&!String.IsNullOrWhiteSpace(e.Cached.Name))
                     .Select(e=>e.Cached.Name).ToArray();
-                if(titles.Length!=1)throw new InvalidOperationException("请使用单图查看器；不能唯一确定当前照片标题。");
+                if(titles.Length>1)throw new MultipleViewerException(titles.Length);
+                if(titles.Length==0)throw new InvalidOperationException("当前查看器没有可读取的主图标题，未发送。");
                 string filename=titles[0];int index=0;
                 var number=Regex.Match(filename,@"^(.*?)\s+\[(\d+)\]$");
                 if(number.Success){filename=number.Groups[1].Value;index=int.Parse(number.Groups[2].Value)-1;}
@@ -214,7 +228,7 @@ namespace RniPanel {
         static IEnumerable<string> KnownStyleTokens(IEnumerable<StyleBinding> bindings) {
             return bindings.Select(b=>b.Style.Uuid).Concat(bindings.Select(b=>NameToken(b.Style.Name))).Distinct(StringComparer.Ordinal);
         }
-        static void ClickNativeRow(AutomationElement row) {
+        static void ClickNativeRow(AutomationElement row,Action finalGuard=null) {
             var bounds=row.Current.BoundingRectangle;
             if(row.Current.IsOffscreen||bounds.IsEmpty||bounds.Width<2||bounds.Height<2)throw new InvalidOperationException("当前样式行不可点击，未清除。");
             int left=GetSystemMetrics(76),top=GetSystemMetrics(77),width=GetSystemMetrics(78),height=GetSystemMetrics(79);
@@ -226,17 +240,35 @@ namespace RniPanel {
                 new INPUT {Type=0,Data=new INPUTUNION {Mouse=new MOUSEINPUT {Flags=2}}},
                 new INPUT {Type=0,Data=new INPUTUNION {Mouse=new MOUSEINPUT {Flags=4}}}
             };
+            // Bounds/provider reads above may block. Recheck cancellation/deadline
+            // after them, immediately before the real native input is submitted.
+            if(finalGuard!=null)finalGuard();
             if(SendInput((uint)inputs.Length,inputs,Marshal.SizeOf(typeof(INPUT)))!=inputs.Length)
                 throw new InvalidOperationException("打开当前样式菜单的输入未完整接收，已停止；不重发。");
         }
         static void RequireStyleMenu(TargetSnapshot expected,Func<bool> current) {
             if(!current())throw new OperationCanceledException("连接已取消，未继续清除。");
-            uint process;GetWindowThreadProcessId(GetForegroundWindow(),out process);
-            if(process!=expected.ProcessId||!IsWindowEnabled(expected.Handle)||(GetAsyncKeyState(0x1b)&0x8000)!=0)
+            IntPtr foreground=GetForegroundWindow();
+            uint process,ownerProcess;
+            GetWindowThreadProcessId(foreground,out process);
+            GetWindowThreadProcessId(expected.Handle,out ownerProcess);
+            if(process!=expected.ProcessId||ownerProcess!=expected.ProcessId||!IsWindowEnabled(expected.Handle)||(GetAsyncKeyState(0x1b)&0x8000)!=0)
                 throw new InvalidOperationException("样式菜单焦点已改变，已停止清除。");
-            using(var owner=Process.GetProcessById(expected.ProcessId))
-                if(owner.StartTime.ToUniversalTime().Ticks!=expected.ProcessStartTicks||owner.MainWindowTitle!=expected.Title)
-                    throw new InvalidOperationException("样式菜单期间 C1 文档已改变，未继续。");
+            var caption=new System.Text.StringBuilder(1024);
+            GetWindowText(expected.Handle,caption,caption.Capacity);
+            string actualTitle=caption.ToString();
+            using(var owner=Process.GetProcessById(expected.ProcessId)) {
+                long actualStart=owner.StartTime.ToUniversalTime().Ticks;
+                bool valid=actualStart==expected.ProcessStartTicks&&String.Equals(actualTitle,expected.Title,StringComparison.Ordinal);
+                // A native top-level menu/popup can become Process.MainWindow.
+                // Document identity belongs to our locked HWND, not that heuristic.
+                LogNativeTiming("menu-guard valid="+valid+" hwnd="+expected.Handle+" hwndPid="+ownerProcess+
+                    " foreground="+foreground+" foregroundPid="+process+" expectedPid="+expected.ProcessId+
+                    " expectedTitle="+expected.Title+" actualHwndTitle="+actualTitle+
+                    " expectedStart="+expected.ProcessStartTicks+" actualStart="+actualStart+
+                    " processReportedHwnd="+owner.MainWindowHandle+" processReportedTitle="+owner.MainWindowTitle);
+                if(!valid)throw new InvalidOperationException("原生菜单期间，已锁定的 C1 文档窗口标题或进程代次改变，未继续；实际标题：“"+actualTitle+"”。");
+            }
         }
         static readonly SemaphoreSlim styleReadGate=new SemaphoreSlim(1,1);
         static readonly object timingLogLock=new object();
@@ -457,7 +489,7 @@ namespace RniPanel {
                 var state=((TogglePattern)toggle).Current.ToggleState;Stage("style-state.end "+state);return state;
             }
             public string[] ReadIdentities(StyleBinding[] bindings,Action validate) {
-                Action guarded=()=>{OperationGuard();validate();};
+                Action guarded=()=>{OperationGuard();validate();OperationGuard();};
                 var names=Read();var identities=new List<string>();
                 foreach(string name in names) {
                     var matches=bindings.Where(b=>b.Style.Name==name).ToArray();
@@ -494,7 +526,8 @@ namespace RniPanel {
                 }
                 if(matches.Count!=1)throw new StylesReadException("style-row-ambiguous","不能唯一定位待清除的原生样式行，未清除。");
                 Stage("remove-row.open-menu");
-                OperationGuard();RequireActiveWindow(target,current);ClickNativeRow(matches[0]);
+                OperationGuard();RequireActiveWindow(target,current);OperationGuard();
+                ClickNativeRow(matches[0],()=>{RequireActiveWindow(target,current);OperationGuard();});
                 AutomationElement action=null;
                 for(int attempt=0;attempt<5&&action==null;attempt++) {
                     Thread.Sleep(60);OperationGuard();RequireStyleMenu(target,current);
@@ -514,11 +547,12 @@ namespace RniPanel {
                 // UIA Invoke closes it without executing RemoveStyleCommand.
                 // Click its freshly resolved native row once, never retry Invoke.
                 Stage("remove-row.click-clear-menu");
-                OperationGuard();RequireStyleMenu(target,current);ClickNativeRow(action);
+                OperationGuard();RequireStyleMenu(target,current);OperationGuard();
+                ClickNativeRow(action,()=>{RequireStyleMenu(target,current);OperationGuard();});
                 Stage("remove-row.click-submitted");
             }
             public void ToggleStyle(StyleBinding binding,bool remove,Action validate) {
-                Action guarded=()=>{OperationGuard();validate();};
+                Action guarded=()=>{OperationGuard();validate();OperationGuard();};
                 // Path discovery is completed during read/preflight, before the
                 // workflow's final target check. A send never performs slow tree
                 // expansion and then acts on an old photo snapshot.
@@ -529,7 +563,9 @@ namespace RniPanel {
                 var state=((TogglePattern)toggle).Current.ToggleState;
                 if(state==ToggleState.Indeterminate||state!=(remove?ToggleState.On:ToggleState.Off))
                     throw new StylesReadException("style-state-changed","原生样式勾选状态与已核对结果不同，未发送；不会以切换命令重试。");
-                guarded();((TogglePattern)toggle).Toggle();
+                Stage("mutation.toggle-dispatch");
+                guarded();OperationGuard();((TogglePattern)toggle).Toggle();
+                Stage("mutation.toggle-returned");
             }
             public string Diagnose() {
                 if(candidates==null)Discover();
@@ -626,7 +662,6 @@ namespace RniPanel {
                     if(reason!=null||!SafetyPolicy.IsAllowedCatalog(current.DocumentPath))
                         throw new InvalidOperationException(reason??"当前不是支持的图库，未发送。");
                     if(foregroundPrepared)RequireActiveWindow(expected,isCurrent);
-                    if(primaryOnly)await Task.Run(()=>RequirePrimaryOnly(expected));
                 }catch(Exception e) {
                     if(commandCompleted)throw new InvalidOperationException("原生命令已发送，但后续目标核对失败；结果未确认，不会重发。详情："+e.Message,e);
                     throw;
@@ -659,7 +694,7 @@ namespace RniPanel {
                     RequireActiveWindow(expected,isCurrent);
                     string[] current;
                     try {current=await ReadStylesBounded(expected,reader=> {
-                        Action validate=()=>{reader.OperationGuard();RequireActiveWindow(expected,isCurrent);};
+                        Action validate=()=>{reader.OperationGuard();RequireActiveWindow(expected,isCurrent);reader.OperationGuard();};
                         reader.Stage("read-identities.begin");
                         var observed=reader.ReadIdentities(clearBindings,validate);
                         reader.Stage("read-identities.end count="+observed.Length);
@@ -679,7 +714,7 @@ namespace RniPanel {
                         // target revalidation; no expensive work moves into Send.
                         try {await ReadStylesBounded(expected,reader=> {
                             reader.Stage("prepare-request.begin");
-                            reader.StyleState(binding,()=>{reader.OperationGuard();RequireActiveWindow(expected,isCurrent);});
+                            reader.StyleState(binding,()=>{reader.OperationGuard();RequireActiveWindow(expected,isCurrent);reader.OperationGuard();});
                             reader.Stage("prepare-request.end");return true;
                         });}
                         catch(Exception e) {
@@ -731,10 +766,15 @@ namespace RniPanel {
                     exact=matches[0];display=exact.Style.Name;
                 }
                 progress((exact==null?"正在通过原生样式行清除 ":"正在清除已核对的原生样式 ")+display+"…");
-                await ValidateTarget();RequireActiveWindow(expected,isCurrent);
                 cleared.Add(styleName);
                 if(exact!=null)await Send(exact,expected,armed,appRoot,isCurrent,true,primaryOnly);
-                else await ReadStylesBounded(expected,reader=>{if(primaryOnly)RequirePrimaryOnly(expected);reader.RemoveApplied(display,expected,isCurrent);return true;},true);
+                else {
+                    if(primaryOnly)await Task.Run(()=>RequirePrimaryOnly(expected));
+                    // The potentially slow native mode read precedes the final
+                    // fresh target check and is never inside a mutation timeout.
+                    await ValidateTarget();RequireActiveWindow(expected,isCurrent);
+                    await ReadStylesBounded(expected,reader=>{reader.RemoveApplied(display,expected,isCurrent);return true;},true);
+                }
                 commandCompleted=true;pendingRemovalName=display;
             }
         }
@@ -759,6 +799,8 @@ namespace RniPanel {
             // endpoint for sending arbitrary input or bypassing these guards.
             foreach(int modifier in new []{0x10,0x11,0x12}) if((GetAsyncKeyState(modifier)&0x8000)!=0) throw new InvalidOperationException("请先松开 Shift / Ctrl / Alt。");
             RequireActiveWindow(expected,isCurrent);
+            if(primaryOnly)await Task.Run(()=>RequirePrimaryOnly(expected));
+            RequireActiveWindow(expected,isCurrent);
             var current=await Task.Run(()=>primaryOnly?InspectPrimary(appRoot):Inspect(appRoot));
             reason=primaryOnly?SafetyPolicy.CheckPrimary(current,armed):SafetyPolicy.Check(current,armed);
             if(reason!=null || current.Handle!=expected.Handle) throw new InvalidOperationException(reason??"C1 窗口已改变。");
@@ -767,11 +809,10 @@ namespace RniPanel {
             var settings=CaptureSettings.Read(appRoot);
             if(!settings.ReplaceStyles||settings.AutoSyncMetadata!="None")
                 throw new InvalidOperationException("C1 连接设置或元数据同步条件已改变，未发送。");
-            if(primaryOnly)await Task.Run(()=>RequirePrimaryOnly(expected));
             var focused=AutomationElement.FocusedElement;
             if(focused!=null && focused.Current.ControlType==ControlType.Edit) throw new InvalidOperationException("C1 当前焦点在文字输入框，已阻止。");
             if(binding.Shortcut==0||settings.ShortcutName!=Shortcuts.SetName) {
-                await ReadStylesBounded(expected,reader=>{reader.ToggleStyle(binding,remove,()=>{RequireActiveWindow(expected,isCurrent);if(primaryOnly)RequirePrimaryOnly(expected);});return true;},true);
+                await ReadStylesBounded(expected,reader=>{reader.ToggleStyle(binding,remove,()=>RequireActiveWindow(expected,isCurrent));return true;},true);
                 return;
             }
             ushort key=(ushort)(binding.Shortcut&0xffff);

@@ -4,7 +4,7 @@
 
 ## 结论
 
-RNI Palette 是 Capture One 外部的 Windows 面板，不是接入官方选区/样式业务 API 的插件。当前可行路线是 Windows UI Automation 观察/操作原生控件，必要时 SendInput 触发已配置的原生样式快捷键，只读 SQLite 校对照片身份。它依赖 C1 的 GUI 控件和布局，无法把一组 GUI 观察与后续动作变成数据库事务。
+RNI Palette 是 Capture One 外部的 Windows 面板，不是接入官方选区/样式业务 API 的插件。当前可行路线是 Windows UI Automation 观察/操作原生控件；原生 WinForms 模式菜单未公开 UIA Toggle 时，以 Windows MSAA 读取精确可见菜单项的实际状态；必要时 SendInput 触发原生鼠标动作或已配置样式快捷键，只读 SQLite 校对照片身份。它依赖 C1 的 GUI 控件和布局，无法把一组 GUI 观察与后续动作变成数据库事务。
 
 不写在线图库、不修改原片、不注入 C1 进程、不加载并调用厂商私有方法。私有程序集的静态元数据仅用来理解原生界面和已有命令语义，不是外部 SDK。
 
@@ -66,6 +66,8 @@ Capture One 官方 Developer Portal 明确提供插件 SDK、API 文档、教程
 | 移至下个已选主图 | `selectNextToolStripMenuItem` | 选择 → 下一个 |
 
 虽然菜单内部名称含 PrimaryOnly，其 Checked 绑定实际为 EditMultiple：选中表示同时编辑多图。不能从名字推断反向含义。原生界面还可能提示“您选择了多个变体，但‘编辑所有已选变体’选项为关闭”，其选项包括“仅限主变体”和“所有已选变体”。遇未明确处理的弹窗应停止，不自动批准全部照片。
+
+实际模式菜单可能位于同一 C1 进程的独立 popup HWND，且没有 UIA TogglePattern。此时只对已唯一定位并可见的菜单项中心调用 `AccessibleObjectFromPoint`，使用 API 返回的 child ID 读取 `IAccessible.accName`、`accRole`、`accState`；要求名称与 UIA 项一致、角色为 MenuItem、该坐标窗口属于同一 C1 进程，才解释 `STATE_SYSTEM_CHECKED=0x10`。状态不支持、混合、不可用或被遮挡一律停止。模式在菜单打开时读取，关闭菜单后不把旧 Checked 当作实时值；实际切换对重新定位的可见命令发送一次鼠标点击，再重新打开回读，不做失败后的动作重试。这仍是 Windows 辅助功能接口，不是 Capture One SDK。[微软 AccessibleObjectFromPoint](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfrompoint)、[微软 MSAA 状态常量](https://learn.microsoft.com/en-us/windows/win32/winauto/object-state-constants)
 
 仍有 GUI 边界：UIA 不直接提供整个浏览器的可靠 SelectionItem 状态时，摘要数量与遍历身份是组合证据；它们不能检测并原子锁定每一瞬间的同数量替换选区。未经现场证明的导航和开关模式必须报告未验证/不可读，不能把单元测试通过称为批量实机成功。
 

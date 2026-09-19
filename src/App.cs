@@ -214,18 +214,18 @@ namespace RniPanel {
                 if(!settings.ReplaceStyles)throw new InvalidOperationException("C1 尚未启用“替换样式”模式；请先检查原生样式设置。面板不会自动改写设置。");
                 if(settings.AutoSyncMetadata!="None")throw new InvalidOperationException("C1 的元数据自动同步不是 None，请先关闭自动同步再连接。");
                 if(bindings.Count==0)throw new InvalidOperationException("没有可用 RNI 样式入口，请先检查样式和 ICC 安装。");
-                var observed=await Task.Run(()=>CaptureOneBridge.InspectPrimary(appRoot));
+                var observed=await Task.Run(()=>CaptureOneBridge.InspectSelection(appRoot));
                 if(IsDisposed||Disposing||!attemptGate.IsCurrent(permit))return;
                 File.AppendAllText(Path.Combine(store.DirectoryPath,"connection-diagnostics.log"),DateTimeOffset.Now.ToString("o")+" "+observed.Diagnostics+"; count="+observed.SelectedCount+"; path="+observed.DocumentPath+Environment.NewLine);
                 if(observed.Modal||!observed.Enabled)throw new InvalidOperationException("C1 窗口当前被识别为弹窗状态；详细原因已记录，未发送。");
                 if(!SafetyPolicy.IsAllowedCatalog(observed.DocumentPath))throw new InvalidOperationException("目前只支持 Photography-Master 工作主库与 RNI-Panel-Sandbox，不连接旧目录或会话。");
-                reason=SafetyPolicy.CheckPrimary(observed,observed);if(reason!=null)throw new InvalidOperationException(reason);
+                reason=SafetyPolicy.CheckDocument(observed,observed);if(reason!=null)throw new InvalidOperationException(reason);
                 string kind=String.Equals(observed.DocumentPath,SafetyPolicy.MainCatalogPath,StringComparison.OrdinalIgnoreCase)?"Photography-Master 正式工作主库":"RNI-Panel-Sandbox 测试沙盒";
-                string message="将连接："+kind+"\n\n"+observed.DocumentPath+"\n\n每次点击档位或清除，会修改 C1 当时选中照片的调整。\n多选时先核对完整选区，再逐张执行并确认。\n同一图库可换照片，无需重连；切换图库会停止。\n不改原片，不在线写图库数据库。\n\n当前已选："+observed.SelectedCount+" 张\n当前主图："+observed.FileName+"\n\n确认启用此图库？";
+                string message="将连接："+kind+"\n\n"+observed.DocumentPath+"\n\n每次点击档位或清除，会修改 C1 当时选中照片的调整。\n多选时先核对完整选区，再逐张执行并确认。\n连接本身不会改变照片或查看器。\n同一图库可换照片，无需重连；切换图库会停止。\n不改原片，不在线写图库数据库。\n\n当前已选："+observed.SelectedCount+" 张\n\n确认启用此图库？";
                 if(MessageBox.Show(this,message,"连接当前图库",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes){SetStatus("未连接，保持预览模式。",false);return;}
                 armedId=observed.VariantId;armedTarget=observed;connectedCatalog=observed;setupAcknowledged=true;confirmedStyleUuid=null;UpdateHighlights();
                 target.Text="已连接 "+observed.Title+" · 当前 "+observed.SelectedCount+" 张";live.Enabled=true;live.Checked=true;
-                SetStatus("在 C1 选一张或多张，再点档位。逐张原生确认；同档不重发。",false);
+                SetStatus("在 C1 选一张或多张，再点档位。逐张原生确认；结果未知不重试。",false);
                 Record("connected",null,"user confirmed full catalog path; selected="+observed.SelectedCount+"; each request locks current selection");
             }catch(Exception e){if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus(e.Message,true);}}finally{SetBusy(false);}
         }
@@ -237,10 +237,12 @@ namespace RniPanel {
             Func<bool> isCurrent=()=>!IsDisposed&&!Disposing&&live.Checked&&attemptGate.IsCurrent(permit);
             if(binding==null){SetStatus("此样式或对应 ICC 不可访问，请重新加载面板后检查本机安装。",true);return;}
             SetBusy(true);SetStatus("正在核对 "+style.Name+"… 可取消“启用连接”停止。",false);
+            TargetSnapshot preparedTarget=null;
             try {
                 var settings=CaptureSettings.Read(appRoot);string reason;
                 if(!setupAcknowledged||!settings.ReplaceStyles||settings.AutoSyncMetadata!="None")throw new InvalidOperationException("连接条件已改变，请重新检查替换样式模式与元数据同步。");
-                var observed=await Task.Run(()=>CaptureOneBridge.InspectPrimary(appRoot));
+                var observed=await CaptureOneBridge.PreparePrimaryViewer(appRoot,connectedCatalog,isCurrent);
+                preparedTarget=observed;
                 if(!isCurrent())throw new OperationCanceledException("连接已取消，未发送。");
                 if(!SafetyPolicy.IsAllowedCatalog(observed.DocumentPath))throw new InvalidOperationException("当前不是支持的图库，未发送。");
                 reason=SafetyPolicy.CheckDocument(observed,connectedCatalog);if(reason!=null)throw new InvalidOperationException(reason);
@@ -265,7 +267,8 @@ namespace RniPanel {
                 SetStatus(result.Sent?"C1 已确认 "+style.Name+" → "+observed.FileName:"当前已是 "+style.Name+"；未重发，效果保持。",false);
             }catch(Exception e){
                 try{Record("stopped",style,e.ToString());}catch{}
-                if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message,true);}
+                if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message+
+                    (preparedTarget!=null&&preparedTarget.RestoreMultiViewer?" 查看器可能保持仅主图；未自动重试。":""),true);}
             }finally{SetBusy(false);}
         }
         async Task ClearStyle() {
@@ -274,11 +277,13 @@ namespace RniPanel {
             long permit=attemptGate.Capture();
             Func<bool> isCurrent=()=>!IsDisposed&&!Disposing&&live.Checked&&attemptGate.IsCurrent(permit);
             SetBusy(true);SetStatus("正在读取当前 RNI 样式，准备清除…",false);
+            TargetSnapshot preparedTarget=null;
             try {
                 var settings=CaptureSettings.Read(appRoot);string reason;
                 if(!setupAcknowledged||settings.AutoSyncMetadata!="None")
                     throw new InvalidOperationException("连接条件已改变，请重新连接图库。未清除。");
-                var observed=await Task.Run(()=>CaptureOneBridge.InspectPrimary(appRoot));
+                var observed=await CaptureOneBridge.PreparePrimaryViewer(appRoot,connectedCatalog,isCurrent);
+                preparedTarget=observed;
                 if(!isCurrent())throw new OperationCanceledException("连接已取消，未清除。");
                 if(!SafetyPolicy.IsAllowedCatalog(observed.DocumentPath))throw new InvalidOperationException("当前不是支持的图库，未清除。");
                 reason=SafetyPolicy.CheckDocument(observed,connectedCatalog);if(reason!=null)throw new InvalidOperationException(reason);
@@ -303,7 +308,8 @@ namespace RniPanel {
                 SetStatus(result.Sent?"C1 已确认清除 "+result.RemovedStyle+" → "+observed.FileName:"当前没有已识别的 RNI 样式，无需清除。",false);
             }catch(Exception e){
                 try{Record("clear-stopped",null,e.ToString());}catch{}
-                if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message,true);}
+                if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message+
+                    (preparedTarget!=null&&preparedTarget.RestoreMultiViewer?" 查看器可能保持仅主图；未自动重试。":""),true);}
             }finally{SetBusy(false);}
         }
         async void ShowSetup() {

@@ -259,6 +259,7 @@ namespace RniPanel {
         public int VariantId;
         public string VariantUuid;
         public int SelectedCount;
+        public bool RestoreMultiViewer;
         public bool Modal;
         public bool Enabled;
         public string Diagnostics;
@@ -424,8 +425,8 @@ namespace RniPanel {
     public sealed class BatchStyleException:InvalidOperationException {
         public BatchStyleResult Result {get;private set;}
         public BatchStyleException(BatchStyleResult result,Exception inner):base(
-            "批量已停止：已确认 "+result.Confirmed+"/"+result.Total+" 张（发送 "+result.Sent+" 张）。"+
-            "未确认的当前照片不会自动重试。"+(result.EditModeRestored?"":"编辑模式可能仍为仅主图；请查看 C1。")+" "+inner.Message,inner) {Result=result;}
+            "批量已停止：已确认 "+result.Confirmed+"/"+result.Total+" 张（其中已确认发送 "+result.Sent+" 张）。"+
+            "当前未确认项可能已收到命令，请以 C1 为准，不会自动重试。"+(result.EditModeRestored?"":"编辑模式或查看器可能保持仅主图；请查看 C1。")+" "+inner.Message,inner) {Result=result;}
     }
     public static class BatchStyleWorkflow {
         static void RequireCurrent(IBatchStyleSession session) {

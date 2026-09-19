@@ -37,6 +37,8 @@ The actual document selector, browser/viewer identity controls and Styles and Pr
 2. `SendInput` dispatches existing native style shortcuts when an applicable saved binding is available; otherwise the exact native style-tree checkbox path is used.
 3. Windows `winsqlite3` opens the catalog read-only solely to disambiguate photo identity. It is not the authority for live style state, and there are no online database writes or original-file changes.
 
+When a native WinForms editing-mode menu does not expose UIA Toggle state, Windows MSAA reads the exact visible menu row's name, role and checked flags, including the returned child ID. This is still GUI accessibility, not a Capture One business API. Missing accessibility state is never replaced with a saved setting or assumed Off value. Physical clicks are used where C1's actual mouse handlers are required; merely returning from UIA Invoke is not treated as an applied change.
+
 Capture One has a Windows developer SDK, but this project has not established a supported external API for the needed live selection / ApplyStyle / per-style-clear operations. In-process private methods and macOS AppleScript are not treated as Windows external interfaces. See [current architecture notes](docs/architecture-current.md).
 
 ## Build

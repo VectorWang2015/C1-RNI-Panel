@@ -14,7 +14,8 @@ if (!$TestsOnly) {
     $panelExe = Join-Path $panelBuild 'RniPanel.exe'
     $bridge = Join-Path $panelRoot 'src\NativeBridge.cs'
     $batch = Join-Path $panelRoot 'src\NativeBatch.cs'
+    $viewer = Join-Path $panelRoot 'src\NativeViewer.cs'
     $window = Join-Path $panelRoot 'src\App.cs'
-    & $compiler /nologo /utf8output /target:winexe /platform:x64 "/out:$panelExe" /r:System.Core.dll /r:System.Xml.Linq.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationClient.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationTypes.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll $core $catalogReader $bridge $batch $window
+    & $compiler /nologo /utf8output /target:winexe /platform:x64 "/out:$panelExe" /r:System.Core.dll /r:System.Xml.Linq.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Accessibility.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationClient.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationTypes.dll /r:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll $core $catalogReader $bridge $batch $viewer $window
     if ($LASTEXITCODE -ne 0) { throw 'Panel build failed.' }
 }

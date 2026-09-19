@@ -75,7 +75,25 @@ namespace RniPanel {
             if(matches.Length==1)return matches[0];
             throw new InvalidOperationException("无法唯一找到 C1 原生命令 "+id+"；批量未继续。");
         }
+        static AutomationElement FindBatchControl(AutomationElement root,AutomationElement openedMenu,string id,params string[] names) {
+            // The caller already opened this exact header/submenu. Read its
+            // current child tree first; never cache the returned command/state.
+            if(openedMenu!=null)try {
+                var info=openedMenu.Current;
+                if(info.ProcessId==root.Current.ProcessId&&!info.IsOffscreen&&info.IsEnabled) {
+                    var timer=System.Diagnostics.Stopwatch.StartNew();
+                    var matches=MatchBatchControl(openedMenu,id,new HashSet<string>(names.Select(MenuName),StringComparer.OrdinalIgnoreCase));
+                    LogNativeTiming("batch-menu opened-scope id="+id+"; matches="+matches.Length+"; ms="+timer.ElapsedMilliseconds);
+                    if(matches.Length==1)return matches[0];
+                    if(matches.Length>1)throw new InvalidOperationException("已展开的原生菜单命令不唯一，批量已停止。");
+                }
+            }catch(ElementNotAvailableException){}
+            return FindBatchControl(root,id,names);
+        }
         static AutomationElement OpenBatchMenu(TargetSnapshot target,string id,params string[] names) {
+            return OpenBatchMenu(target,null,id,names);
+        }
+        static AutomationElement OpenBatchMenu(TargetSnapshot target,AutomationElement openedParent,string id,params string[] names) {
             var timer=System.Diagnostics.Stopwatch.StartNew();
             AutomationElement menu=null;
             bool top=id=="imageToolStripMenuItem"||id=="selectToolStripMenuItem"||id=="viewToolStripMenuItem";
@@ -109,7 +127,7 @@ namespace RniPanel {
                     if(menu==null)menu=FindBatchControl(root,id,names);
                     batchMenuHeaders[id]=menu;
                 }
-            } else menu=FindBatchControl(AutomationElement.FromHandle(target.Handle),id,names);
+            } else menu=FindBatchControl(AutomationElement.FromHandle(target.Handle),openedParent,id,names);
             if(!menu.Current.IsEnabled)throw new InvalidOperationException("C1 原生菜单不可操作，批量已停止。");
             LogNativeTiming("batch-menu open.begin id="+id+"; ms="+timer.ElapsedMilliseconds);
             object pattern;
@@ -193,7 +211,7 @@ namespace RniPanel {
                 // return without executing C1's native command.
                 if(batchEditUsesMenu||element.Current.ControlType==ControlType.MenuItem||element.Current.IsOffscreen) {
                     menu=OpenBatchMenu(target,"imageToolStripMenuItem","图像","图像(I)","Image");
-                    element=FindBatchControl(AutomationElement.FromHandle(target.Handle),"editPrimaryOnlyToolStripMenuItem",
+                    element=FindBatchControl(AutomationElement.FromHandle(target.Handle),menu,"editPrimaryOnlyToolStripMenuItem",
                         "编辑所有已选项","编辑所有已选变体","Edit All Selected Variants");
                 }
                 bool actual=ReadBatchEditMode(element);
@@ -201,7 +219,7 @@ namespace RniPanel {
                 if(actual!=before)throw new InvalidOperationException("C1 多图编辑开关在准备期间改变，未发送切换。");
                 RequireStyleMenu(target,current);
                 // One native mouse click, never an Invoke-then-click retry.
-                ClickNativeRow(element);
+                ClickNativeRow(element,()=>RequireStyleMenu(target,current));
                 clicked=true;
                 batchEditMode=null;
             } finally {
@@ -230,7 +248,7 @@ namespace RniPanel {
                 batchEditUsesMenu=true;
                 var menu=OpenBatchMenu(target,"imageToolStripMenuItem","图像","图像(I)","Image");
                 try {
-                    batchEditMode=FindBatchControl(AutomationElement.FromHandle(target.Handle),"editPrimaryOnlyToolStripMenuItem",
+                    batchEditMode=FindBatchControl(AutomationElement.FromHandle(target.Handle),menu,"editPrimaryOnlyToolStripMenuItem",
                         "编辑所有已选项","编辑所有已选变体","Edit All Selected Variants");
                     actual=ReadBatchEditMode(batchEditMode);
                 } finally {CloseBatchMenu(menu);}
@@ -302,7 +320,7 @@ namespace RniPanel {
                     RequireWindow();
                     var menu=OpenBatchMenu(connected,"selectToolStripMenuItem","选择","Select");
                     try {
-                        var item=FindBatchControl(AutomationElement.FromHandle(connected.Handle),
+                        var item=FindBatchControl(AutomationElement.FromHandle(connected.Handle),menu,
                             first?"selectFirstToolStripMenuItem":"selectNextToolStripMenuItem",
                             first?"第一个":"下一个",first?"First":"Next",first?"Select First":"Select Next");
                         if(!item.Current.IsEnabled)throw new InvalidOperationException("C1 主图导航不可用，批量已停止。");
@@ -333,6 +351,8 @@ namespace RniPanel {
                 var observed=await InspectPrimary();
                 string reason=SafetyPolicy.CheckPrimary(observed,expected);
                 if(reason!=null)throw new InvalidOperationException(reason);
+                LogNativeTiming("batch-item-start action="+(requested==null?"clear":"apply")+" "+TargetLog(expected)+
+                    (requested==null?"":" styleUuid="+requested.Style.Uuid+" styleName="+requested.Style.Name));
                 var session=new LiveStyleSession(requested,expected,expected,appRoot,current,progress,bindings,true);
                 if(requested==null) {
                     var result=await StyleClearWorkflow.Run(session,KnownStyleTokens(bindings));return result.Sent;

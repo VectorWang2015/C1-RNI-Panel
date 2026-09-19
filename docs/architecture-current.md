@@ -1,6 +1,6 @@
 # RNI Palette：Windows 调用架构与边界
 
-核实日期：2026-09-19。本文是能力依据与实现约束，不是现场功能验收记录；实际交付验证另见发布记录。
+核实日期：2026-09-19 至 2026-09-20。本文是能力依据与实现约束；具体现场通过项与未完成项见 README/发布记录，不从静态实现推断验收。
 
 ## 结论
 
@@ -26,7 +26,9 @@ Capture One 官方 Developer Portal 明确提供插件 SDK、API 文档、教程
 
 空样式列表必须是“确实找到可读、已展开的样式工具，并读到零行”。控件不在当前页面、折叠、隐藏、失效或提供器超时均是独立错误，不能转换为零行再发送样式。
 
-旧版两秒超时还会留下未取消的后台 UIA 调用。当前修复方向是限定已找到的工具子树、批量缓存一次观察中的属性、复用控件引用而非复用旧样式值、仅允许一个未完成读取；提供器超时不再启动重复全树扫描。适当延长限时只是配套措施，不是根因修复的替代。
+旧版两秒超时还会留下未取消的后台 UIA 调用。当前实现限定已找到的工具子树、批量缓存一次观察中的属性、复用控件引用而非复用旧样式值，仅允许一个未完成样式读取；超时不再启动重复全树扫描。原生菜单先定位 MenuBar/同进程可见 popup，再匹配直接菜单子项，避免深入全部样式子菜单。顶层菜单只缓存经重新校验的元素引用，不缓存模式值。适当延长限时只是配套措施，不是根因修复的替代。
+
+开发联调还暴露过一个实际迟发缺陷：发送前的模式校验阻塞超过八秒，外层已经超时，但后台任务在校验返回后继续发送。当前修复把慢模式观察移到限时发送 worker 外，随后再做最终照片身份检查；在阻塞校验返回之后，以及真正 Toggle/SendInput 之前再次检查本次操作是否过期。**这能阻止尚未提交的过期操作开始发送，但不能取消已经进入原生 UIA 提供器的调用。** 后者仍可能晚返回或晚完成，所以保留未完成 worker 的门禁、不自动重试，不能把超时写成“照片一定未改变”或“已经回滚”。
 
 ## 全胶片执行
 
@@ -55,7 +57,7 @@ Capture One 官方 Developer Portal 明确提供插件 SDK、API 文档、教程
 
 官方说明关闭 Edit Selected Variants / Edit All Selected Variants 后，适用操作只影响主变体；开启后 Styles and Presets 可影响其他选中变体。因此可行实现方向是保留整个选区、暂时只编辑主图，用原生 Select First/Next 在已选图中移动主图，每张独立读取、判断、发送一次并确认。它不是把主图勾选当作整组选区状态。[官方多图调整说明](https://support.captureone.com/hc/en-us/articles/360002480877-Adjusting-multiple-images-at-a-time)、[官方主图与选中变体说明](https://support.captureone.com/hc/en-us/articles/360002481917-Primary-and-selected-variants)
 
-本轮实现使用预扫描形成 N 个不同 UUID 的有序目标列表，然后再按该顺序逐张执行；每步检查文档、进程、主图身份、选区数量和实时 EditMultiple 关闭状态。完成后恢复原主图和原编辑模式。取消、外部介入或原生结果不明时停止，保留当前现场供检查，不盲目导航或重发。
+本轮实现使用预扫描形成 N 个不同 UUID 的有序目标列表，然后再按该顺序逐张执行；每步检查文档、进程、主图身份与选区数量，每次真正发送样式前重新观察实时 EditMultiple 关闭状态。慢模式读取不重复塞入每个导航/观察或限时发送 worker。完成后恢复原主图和原编辑模式。取消、外部介入或原生结果不明时停止，保留当前现场供检查，不盲目导航或重发。
 
 本机静态菜单定位：
 
@@ -68,6 +70,18 @@ Capture One 官方 Developer Portal 明确提供插件 SDK、API 文档、教程
 虽然菜单内部名称含 PrimaryOnly，其 Checked 绑定实际为 EditMultiple：选中表示同时编辑多图。不能从名字推断反向含义。原生界面还可能提示“您选择了多个变体，但‘编辑所有已选变体’选项为关闭”，其选项包括“仅限主变体”和“所有已选变体”。遇未明确处理的弹窗应停止，不自动批准全部照片。
 
 实际模式菜单可能位于同一 C1 进程的独立 popup HWND，且没有 UIA TogglePattern。此时只对已唯一定位并可见的菜单项中心调用 `AccessibleObjectFromPoint`，使用 API 返回的 child ID 读取 `IAccessible.accName`、`accRole`、`accState`；要求名称与 UIA 项一致、角色为 MenuItem、该坐标窗口属于同一 C1 进程，才解释 `STATE_SYSTEM_CHECKED=0x10`。状态不支持、混合、不可用或被遮挡一律停止。模式在菜单打开时读取，关闭菜单后不把旧 Checked 当作实时值；实际切换对重新定位的可见命令发送一次鼠标点击，再重新打开回读，不做失败后的动作重试。这仍是 Windows 辅助功能接口，不是 Capture One SDK。[微软 AccessibleObjectFromPoint](https://learn.microsoft.com/en-us/windows/win32/api/oleacc/nf-oleacc-accessibleobjectfrompoint)、[微软 MSAA 状态常量](https://learn.microsoft.com/en-us/windows/win32/winauto/object-state-constants)
+
+打开原生菜单时，`Process.MainWindowHandle/MainWindowTitle` 可能暂时指向 popup。菜单期间的守卫核对先前锁定 HWND 的实际窗口标题、所属 PID 与进程启动代次，同时要求焦点仍在同一 C1 进程；不使用动态 MainWindowTitle 误判换库，也不是仅凭 PID 放行。完整文档路径和照片身份仍在操作前后重新核对。
+
+### 自动准备主查看器
+
+`NativeViewer.cs` 将连接与照片执行分开：连接只读取当前图库完整路径和选中数量，不解析照片 UUID、不改变查看器、更不应用样式。明确的 Apply/Clear 请求先走原来的 `InspectPrimary`；已经是唯一主图时不读取或操作视图菜单。仅 `MultipleViewerException`（确实读到多个可见照片标题）才进入准备路径，且再次核对同一图库与 N≥2；数据库、文件名、变体歧义和一般 UIA 错误均不会触发切视图。
+
+准备使用“查看 → 自定义查看器 → 多视图”的真实原生勾选状态。对应 ID 为 `viewToolStripMenuItem` → `customizeViewerToolStripMenuItem` → `viewerModeShowAllToolStripMenuItem`；Checked=true 表示显示多图。只在它确实为 true 时点击关闭，回读后再识别主图。该命令只改 ViewerShowOnlyPrimary，不改选区；它与 Y 键的 VariantViewModeToggle/前后比较模式不同。完整批量成功后恢复本次改过的视图，失败保留当前现场并提示可能仍为仅主图。实机通过范围以 README 对应结果为准，不因为存在代码就称通过。
+
+恢复多视图时，查看器结构正常重建曾使最后的纯图库/数量观察误报“界面仍在变化”。现在 `InspectSelection` 只取得新鲜 DocumentSelector、MainItemsControl、SummaryText，不读取或缓存查看器标题，也不因无关查看器结构噪声拒绝已读到的三控件；它不能用于证明照片身份。真正应用/清除前的严格 `InspectPrimary`、唯一变体核对及最终目标验证保持不变。
+
+两张照片的实测批量应用、重复和清除均已完成，但分别约115、76、109秒，仍有显著GUI成本。后续已展开菜单小范围查询减少了一个已测出的全窗口回退热点，未对套用/清除流程重新计时，不能把优化代码存在写成新的性能保证。这里不以牺牲最终目标校验换取速度。
 
 仍有 GUI 边界：UIA 不直接提供整个浏览器的可靠 SelectionItem 状态时，摘要数量与遍历身份是组合证据；它们不能检测并原子锁定每一瞬间的同数量替换选区。未经现场证明的导航和开关模式必须报告未验证/不可读，不能把单元测试通过称为批量实机成功。
 

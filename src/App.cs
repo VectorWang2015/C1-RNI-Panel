@@ -192,9 +192,11 @@ namespace RniPanel {
         }
         void Record(string action,FilmStyle style,string message) {
             Directory.CreateDirectory(store.DirectoryPath);
+            bool batchPhase=action=="phase"&&armedTarget!=null&&armedTarget.SelectedCount>1;
             var record=new {at=DateTimeOffset.Now.ToString("o"),version="0.6",action=action,
-                catalog=armedTarget==null?null:armedTarget.DocumentPath,variantId=armedId,
-                variantUuid=armedTarget==null?null:armedTarget.VariantUuid,
+                catalog=armedTarget==null?null:armedTarget.DocumentPath,variantId=batchPhase?(int?)null:armedId,
+                variantUuid=batchPhase||armedTarget==null?null:armedTarget.VariantUuid,
+                targetScope=batchPhase?"batch-phase-current-target-in-native-timing-log":"record-target",
                 style=style==null?null:style.Name,styleUuid=style==null?null:style.Uuid,message=message};
             File.AppendAllText(Path.Combine(store.DirectoryPath,"style-actions.jsonl"),new JavaScriptSerializer().Serialize(record)+Environment.NewLine);
         }

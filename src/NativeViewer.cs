@@ -22,14 +22,14 @@ namespace RniPanel {
             try {
                 viewMenu=OpenBatchMenu(target,"viewToolStripMenuItem","查看","查看(V)","View");
                 RequireStyleMenu(target,current);
-                customizeMenu=OpenBatchMenu(target,"customizeViewerToolStripMenuItem","自定义查看器","Customize Viewer");
+                customizeMenu=OpenBatchMenu(target,viewMenu,"customizeViewerToolStripMenuItem","自定义查看器","Customize Viewer");
                 RequireStyleMenu(target,current);
-                var item=FindBatchControl(AutomationElement.FromHandle(target.Handle),"viewerModeShowAllToolStripMenuItem","多视图","Multi View","Multi-view");
+                var item=FindBatchControl(AutomationElement.FromHandle(target.Handle),customizeMenu,"viewerModeShowAllToolStripMenuItem","多视图","Multi View","Multi-view");
                 bool actual=ReadNativeMenuChecked(item);
                 LogNativeTiming("viewer-mode observed; multiple="+actual+"; requested="+(requested.HasValue?requested.Value.ToString():"read-only"));
                 if(requested.HasValue&&actual!=requested.Value) {
                     RequireStyleMenu(target,current);
-                    ClickNativeRow(item);clicked=true;
+                    ClickNativeRow(item,()=>RequireStyleMenu(target,current));clicked=true;
                 }
                 return new ViewerModeObservation {Multiple=actual,Changed=clicked};
             } finally {

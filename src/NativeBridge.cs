@@ -104,12 +104,16 @@ namespace RniPanel {
                 reused=false;
                 for(int attempt=0;attempt<2;attempt++)try {
                     int start=Volatile.Read(ref revision);
-                    reused=controls!=null&&observedRevision==start;
+                    // Count-only callers intentionally do not depend on viewer
+                    // topology. A restore can rebuild viewers/tooltips while the
+                    // document/browser/summary controls remain live and unchanged.
+                    reused=controls!=null&&(selectionOnly||observedRevision==start);
                     if(!reused)controls=FindNamedControls(root,"DocumentSelector","MainItemsControl","SummaryText","tb_VariantTitle");
                     // Cache only element references. Every inspection gets fresh
                     // text, visibility and bounds; no old photo/path is reused.
-                    var current=controls.Select(e=>e.GetUpdatedCache(ElementProperties())).ToArray();
-                    if(Volatile.Read(ref revision)!=start) {
+                    var observedControls=selectionOnly?controls.Where(e=>e.Cached.AutomationId!="tb_VariantTitle"):controls;
+                    var current=observedControls.Select(e=>e.GetUpdatedCache(ElementProperties())).ToArray();
+                    if(!selectionOnly&&Volatile.Read(ref revision)!=start) {
                         controls=null;
                         // A native tooltip/menu can legitimately change the
                         // root during observation. Rediscover once, never return
@@ -121,7 +125,10 @@ namespace RniPanel {
                             controls=null;
                             throw new InvalidOperationException("C1 目标控件已隐藏或布局改变（"+id+"），不能使用旧选区。");
                         }
-                    observedRevision=start;
+                    // Refreshing only three references cannot certify the cached
+                    // viewer set. Force the next primary-identity call to discover
+                    // all viewer titles after any count-only inspection.
+                    observedRevision=selectionOnly?-1:start;
                     return current;
                 } catch(ElementNotAvailableException) {
                     controls=null;
@@ -144,6 +151,9 @@ namespace RniPanel {
         public static TargetSnapshot InspectPrimary(string appRoot) {return InspectCore(appRoot,true);}
         public static TargetSnapshot InspectSelection(string appRoot) {return InspectCore(appRoot,true,true);}
         static TargetSnapshot InspectCore(string appRoot,bool allowMultiple,bool selectionOnly=false) {
+            var watch=Stopwatch.StartNew();string inspectId=Guid.NewGuid().ToString("N").Substring(0,8);
+            Action<string> trace=stage=>LogNativeTiming("inspect="+inspectId+" elapsedMs="+watch.ElapsedMilliseconds+" mode="+(selectionOnly?"selection-count":allowMultiple?"primary":"single")+" "+stage);
+            trace("begin");
             string executable = System.IO.Path.GetFullPath(System.IO.Path.Combine(appRoot,"CaptureOne.exe"));
             var processes = Process.GetProcessesByName("CaptureOne").Where(p=> {
                 try {return p.MainWindowHandle!=IntPtr.Zero && p.MainModule.FileName.Equals(executable,StringComparison.OrdinalIgnoreCase);}catch{return false;}
@@ -157,10 +167,13 @@ namespace RniPanel {
             state.Diagnostics="Enabled="+state.Enabled+"; popup="+popup+"; main="+handle;
             if(!state.Enabled || state.Modal) return state;
             bool reusedControls;
+            trace("controls.begin");
             var controls=ReadTargetControls(state,out reusedControls,selectionOnly);
+            trace("controls.end cached="+reusedControls+" controls="+controls.Length);
             state.Diagnostics+="; targetControls="+(reusedControls?"references-refreshed":"tree-discovered");
             Func<string,AutomationElement> control=id=>controls.FirstOrDefault(e=>e.Cached.AutomationId==id&&!e.Cached.IsOffscreen);
             state.DocumentPath=GetDocumentPath(control("DocumentSelector"),state.Title);
+            trace("document.confirmed");
             var browser=control("MainItemsControl");
             if(browser==null) throw new InvalidOperationException("未找到 C1 照片浏览器；请关闭弹窗并显示浏览器。");
             if(selectionOnly) {
@@ -169,6 +182,7 @@ namespace RniPanel {
                     throw new InvalidOperationException("不能从 C1 原生摘要确认当前选区数量，未改变查看器。");
                 state.SelectedCount=count;
                 state.Diagnostics+="; summary="+countControl.Cached.Name+"; adapter=selection-count-only; no-primary-identity";
+                trace("complete count="+count+" no-primary-identity");
                 return state;
             }
             object selection;
@@ -192,7 +206,9 @@ namespace RniPanel {
                 var number=Regex.Match(filename,@"^(.*?)\s+\[(\d+)\]$");
                 if(number.Success){filename=number.Groups[1].Value;index=int.Parse(number.Groups[2].Value)-1;}
                 if(index<0)throw new InvalidOperationException("变体序号无效。");
+                trace("identity-db.begin");
                 var identity=CatalogReader.ResolveSingle(state.DocumentPath,filename);
+                trace("identity-db.end variantId="+identity.Id);
                 string peerName="Variant: "+identity.FileName+" - VariantID: "+identity.Id;
                 if(variants.Length>0&&!variants.Contains(peerName,StringComparer.Ordinal))
                     throw new InvalidOperationException("当前选区与查看器不是同一张照片，未发送。");
@@ -202,6 +218,7 @@ namespace RniPanel {
                 state.Diagnostics+="; adapter=selection-summary + one-primary-viewer-caption + globally-single-variant-readonly-db + browser-peer; uuid="+identity.Uuid;
             }
             if(state.SelectedCount!=1&&!allowMultiple)state.Diagnostics+="; a single selected image and one viewer are required";
+            trace("complete "+TargetLog(state));
             return state;
         }
         static void RequireActiveWindow(TargetSnapshot expected,Func<bool> isCurrent) {
@@ -272,6 +289,10 @@ namespace RniPanel {
         }
         static readonly SemaphoreSlim styleReadGate=new SemaphoreSlim(1,1);
         static readonly object timingLogLock=new object();
+        static string TargetLog(TargetSnapshot target) {
+            return "targetId="+target.VariantId+" targetUuid="+target.VariantUuid+" file="+target.FileName+
+                " selected="+target.SelectedCount+" catalog="+target.DocumentPath+" hwnd="+target.Handle;
+        }
         static void LogNativeTiming(string value) {
             try {
                 lock(timingLogLock) {
@@ -546,12 +567,12 @@ namespace RniPanel {
                 // C1 handles this menu's PreviewMouseDown, not MenuItem.Command;
                 // UIA Invoke closes it without executing RemoveStyleCommand.
                 // Click its freshly resolved native row once, never retry Invoke.
-                Stage("remove-row.click-clear-menu");
+                Stage("remove-row.click-clear-menu "+TargetLog(target)+" styleName="+name);
                 OperationGuard();RequireStyleMenu(target,current);OperationGuard();
                 ClickNativeRow(action,()=>{RequireStyleMenu(target,current);OperationGuard();});
-                Stage("remove-row.click-submitted");
+                Stage("remove-row.click-submitted "+TargetLog(target)+" styleName="+name);
             }
-            public void ToggleStyle(StyleBinding binding,bool remove,Action validate) {
+            public void ToggleStyle(StyleBinding binding,bool remove,Action validate,TargetSnapshot target) {
                 Action guarded=()=>{OperationGuard();validate();OperationGuard();};
                 // Path discovery is completed during read/preflight, before the
                 // workflow's final target check. A send never performs slow tree
@@ -563,9 +584,9 @@ namespace RniPanel {
                 var state=((TogglePattern)toggle).Current.ToggleState;
                 if(state==ToggleState.Indeterminate||state!=(remove?ToggleState.On:ToggleState.Off))
                     throw new StylesReadException("style-state-changed","原生样式勾选状态与已核对结果不同，未发送；不会以切换命令重试。");
-                Stage("mutation.toggle-dispatch");
+                Stage("mutation.toggle-dispatch action="+(remove?"remove":"apply")+" "+TargetLog(target)+" styleUuid="+binding.Style.Uuid+" styleName="+binding.Style.Name);
                 guarded();OperationGuard();((TogglePattern)toggle).Toggle();
-                Stage("mutation.toggle-returned");
+                Stage("mutation.toggle-returned "+TargetLog(target)+" styleUuid="+binding.Style.Uuid);
             }
             public string Diagnose() {
                 if(candidates==null)Discover();
@@ -812,7 +833,7 @@ namespace RniPanel {
             var focused=AutomationElement.FocusedElement;
             if(focused!=null && focused.Current.ControlType==ControlType.Edit) throw new InvalidOperationException("C1 当前焦点在文字输入框，已阻止。");
             if(binding.Shortcut==0||settings.ShortcutName!=Shortcuts.SetName) {
-                await ReadStylesBounded(expected,reader=>{reader.ToggleStyle(binding,remove,()=>RequireActiveWindow(expected,isCurrent));return true;},true);
+                await ReadStylesBounded(expected,reader=>{reader.ToggleStyle(binding,remove,()=>RequireActiveWindow(expected,isCurrent),expected);return true;},true);
                 return;
             }
             ushort key=(ushort)(binding.Shortcut&0xffff);
@@ -823,8 +844,10 @@ namespace RniPanel {
             var sequence=modifiers.Concat(new[]{key,key}).Concat(modifiers.AsEnumerable().Reverse()).ToArray();
             var inputs=new INPUT[sequence.Length];
             for(int i=0;i<inputs.Length;i++) inputs[i]=new INPUT {Type=1,Data=new INPUTUNION {Keyboard=new KEYBDINPUT {Vk=sequence[i],Flags=(uint)(i>modifiers.Count?2:0)}}};
+            LogNativeTiming("mutation.shortcut-dispatch action="+(remove?"remove":"apply")+" "+TargetLog(expected)+" styleUuid="+binding.Style.Uuid+" styleName="+binding.Style.Name);
             if(!isCurrent())throw new OperationCanceledException("连接已取消，未发送。");
             uint sent=SendInput((uint)inputs.Length,inputs,Marshal.SizeOf(typeof(INPUT)));
+            LogNativeTiming("mutation.shortcut-input-returned accepted="+sent+"/"+inputs.Length+" "+TargetLog(expected)+" styleUuid="+binding.Style.Uuid);
             if(sent!=inputs.Length) throw new InvalidOperationException("系统未完整接收按键，结果未知；不自动重试。请回 C1 检查。");
         }
     }

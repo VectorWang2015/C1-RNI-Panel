@@ -1,29 +1,17 @@
-# RNI Palette development
+# RNI Palette
 
-## Working agreement
+0.4 is delivered and being tested by the user; 0.3 native readback/round-trip/repeat behavior is accepted. Broader photo context: `D:\照片\AGENTS.md`.
 
-- This is the source directory for a single-user Windows Capture One helper.
-- The parent `D:\照片\AGENTS.md` has the migration context. Do not repeat completed photo work.
-- User validates the native UI. Do not repeatedly take over their mouse or retest accepted flows.
-- Keep validation lightweight: compile the changed app and use the user's actual-use feedback. Do not keep growing a test checklist or repeatedly run full regressions for this personal tool; retain existing tests without making them the main workflow.
-- Do not routinely hash programs, catalogs, photographs, or vendor style files. Keep checks that prevent a wrong image/catalog or an unintended native toggle.
-- No direct catalog database writes. No original-media changes, bulk style application, proprietary ICC/style redistribution, or silent C1 configuration changes.
-- Main-catalog use is a product feature gated by the user's explicit in-app connection confirmation. It is not authority for the agent to edit main-catalog photos.
+## Work
 
-## Source and delivery
+- Single-user Windows / C# / .NET Framework WinForms tool. Prioritize features and user feedback; compile changed code, but do not keep adding tests, repeating full regressions, or scanning file checksums.
+- User handles UI testing. Do not take over their mouse or repeat accepted flows. Keep protection against wrong targets and accidental style toggles.
+- No direct catalog writes, original-media changes, bulk application, vendor-asset redistribution, or silent C1 setting changes. Main-catalog support requires the user's in-app connection confirmation, not agent-initiated photo edits.
+- Code: `src/`; existing tests: `tests/CoreTests.cs`. Build alongside running releases with `build.ps1 -OutputDirectory <new-directory>`; deliver under the active task's `outputs/`.
+- Preserve shared favorites/window placement in `%LOCALAPPDATA%\RniPalette`; seed only if absent. Supported catalogs are the explicitly named Photography-Master work catalog and RNI-Panel-Sandbox.
 
-- `src/`: C# / .NET Framework Windows Forms application.
-- `tests/CoreTests.cs`: local core and simulated-workflow tests; installed RNI styles are required for integration portions.
-- `build.ps1 -OutputDirectory <new-directory>`: build beside, not over, a running release.
-- Deliver application builds under the active Codex task's `outputs/`; never track binaries or local user state here.
-- Preserve existing favorites. From 0.4, shared state is in `%LOCALAPPDATA%\RniPalette`, seeded only if absent.
-- Runtime is restricted to the explicitly named Photography-Master work catalog and RNI-Panel-Sandbox; the user must connect the current catalog first.
+## Git
 
-## Git synchronization
-
-- Remote: `git@github.com:VectorWang2015/C1-RNI-Panel.git`.
-- After each coherent, buildable round of changes, commit and push the code. Do not leave synchronization as an implied future promise.
-- Inspect the staged file list and diff before pushing. `.gitignore` is an allowlist: source, tests, build script, and docs only.
-- Never force-push or overwrite remote work. Report authentication/network failures and keep the local commit.
-- Do not store credentials, personal preferences, machine logs, photo/catalog data, RNI ICC/style files, or Capture One binaries in Git.
-- SSH works after the user registered the machine's existing public key with their GitHub account. No key was created or changed, and no Git proxy configuration was needed.
+- `git@github.com:VectorWang2015/C1-RNI-Panel.git`, branch `main`. Commit and push each coherent completed change, including documentation updates; inspect the staged diff. Never force-push or overwrite others' work.
+- Track source, tests, build script and docs only. Keep builds, credentials, personal state/logs, local photo fixtures, catalogs, media and vendor assets ignored.
+- Existing SSH public key is registered on the user's GitHub account; no key changes or proxy were needed. On failure, retain the local commit and report it.

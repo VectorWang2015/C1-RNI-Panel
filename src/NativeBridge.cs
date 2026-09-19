@@ -128,38 +128,57 @@ namespace RniPanel {
             foreach(int modifier in new[]{0x10,0x11,0x12})if((GetAsyncKeyState(modifier)&0x8000)!=0)
                 throw new InvalidOperationException("请先松开 Shift / Ctrl / Alt，已停止。");
         }
-        static void SelectNativeTab(TargetSnapshot expected,string label,Func<bool> isCurrent) {
-            RequireActiveWindow(expected,isCurrent);
-            var root=AutomationElement.FromHandle(expected.Handle);
-            var toolbars=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.AutomationIdProperty,"ToolBar"));
-            var buttons=new List<AutomationElement>();
-            string pattern=label=="Styles"?@"^(样式|Styles)(?:\s*[（(]|$)":@"^(图库|Library)(?:\s*[（(]|$)";
-            foreach(AutomationElement toolbar in toolbars) {
-                foreach(AutomationElement button in toolbar.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button))) {
-                    if(button.Current.IsOffscreen||!button.Current.IsEnabled)continue;
-                    if(Regex.IsMatch(button.Current.HelpText??"",pattern,RegexOptions.IgnoreCase)||Regex.IsMatch(button.Current.Name??"",pattern,RegexOptions.IgnoreCase))buttons.Add(button);
+        static bool IsStylesToolName(string name) {
+            name=(name??"").Trim();
+            return name=="样式与预设"||String.Equals(name,"Styles and Presets",StringComparison.OrdinalIgnoreCase)||
+                String.Equals(name,"Styles & Presets",StringComparison.OrdinalIgnoreCase);
+        }
+        static bool HasOwnVisibleStylesHeader(AutomationElement tool) {
+            int matches=0;
+            foreach(AutomationElement header in tool.FindAll(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.AutomationIdProperty,"headerTextBlock"))) {
+                if(header.Current.IsOffscreen||!IsStylesToolName(header.Current.Name))continue;
+                var owner=TreeWalker.ControlViewWalker.GetParent(header);
+                for(int depth=0;owner!=null&&depth<16;depth++) {
+                    if(Automation.Compare(owner,tool)){matches++;break;}
+                    // A nested tool/group owns its own header, not this tool's.
+                    if(owner.Current.AutomationId=="expander"||owner.Current.ControlType==ControlType.Group)break;
+                    owner=TreeWalker.ControlViewWalker.GetParent(owner);
                 }
             }
-            if(buttons.Count!=1)throw new InvalidOperationException("不能唯一定位 C1 的"+(label=="Styles"?"样式":"图库")+"工具页；未继续。");
-            object nativePattern;
-            RequireActiveWindow(expected,isCurrent);
-            if(buttons[0].TryGetCurrentPattern(SelectionItemPattern.Pattern,out nativePattern)) {
-                var item=(SelectionItemPattern)nativePattern;if(!item.Current.IsSelected)item.Select();return;
+            return matches==1;
+        }
+        static bool IsVisibleExpandedEmptyStyleList(AutomationElement list) {
+            // An empty applied-style list can collapse its own bounds. Accept that
+            // only with live proof that its own named tool is visible and expanded.
+            var bounds=list.Current.BoundingRectangle;
+            if(!bounds.IsEmpty&&bounds.Width>0&&bounds.Height>0)return false;
+            if(list.FindFirst(TreeScope.Children,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem))!=null)return false;
+            var parent=TreeWalker.ControlViewWalker.GetParent(list);
+            for(int depth=0;parent!=null&&depth<16;depth++) {
+                if(parent.Current.ControlType==ControlType.Window)return false;
+                object expansion;
+                bool expandable=parent.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out expansion);
+                bool tool=parent.Current.AutomationId=="expander"||
+                    (expandable&&(parent.Current.ControlType==ControlType.Group||IsStylesToolName(parent.Current.Name)));
+                if(expandable&&((ExpandCollapsePattern)expansion).Current.ExpandCollapseState!=ExpandCollapseState.Expanded)return false;
+                if(tool) {
+                    if(!expandable)return false;
+                    var toolBounds=parent.Current.BoundingRectangle;
+                    if(parent.Current.IsOffscreen||!parent.Current.IsEnabled||toolBounds.IsEmpty||toolBounds.Width<=0||toolBounds.Height<=0)return false;
+                    // Stop at the nearest tool: never borrow a header from another
+                    // expander or search a page/window-wide ancestor for a match.
+                    return IsStylesToolName(parent.Current.Name)||HasOwnVisibleStylesHeader(parent);
+                }
+                parent=TreeWalker.ControlViewWalker.GetParent(parent);
             }
-            if(buttons[0].TryGetCurrentPattern(TogglePattern.Pattern,out nativePattern)) {
-                var item=(TogglePattern)nativePattern;
-                if(item.Current.ToggleState==ToggleState.On)return;
-                if(item.Current.ToggleState!=ToggleState.Off)throw new InvalidOperationException("C1 工具页状态不明确，未发送。");
-                item.Toggle();return;
-            }
-            if(buttons[0].TryGetCurrentPattern(InvokePattern.Pattern,out nativePattern)){((InvokePattern)nativePattern).Invoke();return;}
-            throw new InvalidOperationException("C1 工具页不支持原生调用；请将诊断日志交给开发者，未发送。");
+            return false;
         }
         static string[] ReadNativeStyleList(TargetSnapshot expected) {
             var root=AutomationElement.FromHandle(expected.Handle);
             var lists=root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.AutomationIdProperty,"ListViewAppliedStyles"))
-                .Cast<AutomationElement>().Where(e=>!e.Current.IsOffscreen&&e.Current.IsEnabled).ToArray();
-            if(lists.Length!=1)throw new InvalidOperationException("请展开 C1 的“样式与预设”工具；无法读取当前已应用样式，未重发。");
+                .Cast<AutomationElement>().Where(e=>e.Current.IsEnabled&&(!e.Current.IsOffscreen||IsVisibleExpandedEmptyStyleList(e))).ToArray();
+            if(lists.Length!=1)throw new InvalidOperationException("请在 C1“图库”页添加并展开“样式与预设”，让已应用列表可见；面板不会切页。");
             object scroll;
             if(lists[0].TryGetCurrentPattern(ScrollPattern.Pattern,out scroll)&&((ScrollPattern)scroll).Current.VerticallyScrollable)
                 throw new InvalidOperationException("已应用列表含不可完整读取的滚动项，未发送。");
@@ -173,16 +192,21 @@ namespace RniPanel {
             }
             return result.ToArray();
         }
-        sealed class LiveStyleSession:ILiveStyleSession {
+        sealed class LiveStyleSession:ILiveStyleSession,IClearStyleSession {
             readonly StyleBinding binding;
+            readonly StyleBinding[] clearBindings;
             readonly TargetSnapshot expected,armed;
             readonly string appRoot;
             readonly Func<bool> isCurrent;
             readonly Action<string> progress;
             bool foregroundPrepared;
+            bool clearSent;
+            string[] lastObservedStyles;
             public bool IsCurrent { get {return isCurrent();} }
-            public LiveStyleSession(StyleBinding b,TargetSnapshot e,TargetSnapshot a,string root,Func<bool> current,Action<string> report) {
+            public LiveStyleSession(StyleBinding b,TargetSnapshot e,TargetSnapshot a,string root,Func<bool> current,Action<string> report,
+                IEnumerable<StyleBinding> removable=null) {
                 binding=b;expected=e;armed=a;appRoot=root;isCurrent=current;progress=report;
+                clearBindings=(removable??Enumerable.Empty<StyleBinding>()).ToArray();
             }
             public async Task ValidateTarget() {
                 if(!IsCurrent)throw new OperationCanceledException("连接已取消。");
@@ -194,6 +218,7 @@ namespace RniPanel {
             }
             public async Task<string[]> ReadAppliedStyles() {
                 if(!IsCurrent)throw new OperationCanceledException("连接已取消。");
+                lastObservedStyles=null;
                 if(!foregroundPrepared) {
                     ShowWindow(expected.Handle,3);
                     if(!SetForegroundWindow(expected.Handle))throw new InvalidOperationException("不能激活 C1，未发送。");
@@ -201,49 +226,51 @@ namespace RniPanel {
                     foregroundPrepared=true;
                 }
                 RequireActiveWindow(expected,isCurrent);
-                progress("正在读取 C1 当前样式…（会短暂切换样式 / 图库页）");
-                bool tabChanged=false;
-                string[] result=null;
-                Exception failure=null;
-                try {
-                    SelectNativeTab(expected,"Styles",isCurrent);tabChanged=true;
-                    string[] previous=null;
-                    Exception lastError=null;
-                    // Reads may lag rendering. Require two agreeing live observations;
-                    // only retry reads, never a native style command.
-                    for(int i=0;i<12;i++) {
-                        await Task.Delay(100);
-                        RequireActiveWindow(expected,isCurrent);
-                        try {
-                            var read=Task.Run(()=>ReadNativeStyleList(expected));
-                            if(await Task.WhenAny(read,Task.Delay(2000))!=read)
-                                throw new TimeoutException("C1 当前样式读取超时，已停止，不会重发。");
-                            var current=await read;
-                            RequireActiveWindow(expected,isCurrent);
-                            if(previous!=null&&previous.SequenceEqual(current,StringComparer.Ordinal)){result=current;break;}
-                            previous=current;lastError=null;
-                        }catch(InvalidOperationException e){lastError=e;previous=null;}
+                progress("正在读取 C1 当前样式…");
+                string[] previous=null;
+                // Read only the visible tool, never select a C1 tab. Two matching
+                // observations allow rendering to settle; unavailable tools fail immediately.
+                for(int i=0;i<12;i++) {
+                    await Task.Delay(100);
+                    RequireActiveWindow(expected,isCurrent);
+                    var read=Task.Run(()=>ReadNativeStyleList(expected));
+                    if(await Task.WhenAny(read,Task.Delay(2000))!=read)
+                        throw new TimeoutException("C1 当前样式读取超时，已停止，不会重发。");
+                    var current=await read;
+                    RequireActiveWindow(expected,isCurrent);
+                    if(previous!=null&&previous.SequenceEqual(current,StringComparer.Ordinal)) {
+                        lastObservedStyles=current;return current;
                     }
-                    if(result==null)throw lastError??new InvalidOperationException("C1 当前样式尚未稳定，已停止；请稍后重试。");
-                }catch(Exception e){failure=e;}
-                try {
-                    // Never take focus back if the user switched apps or cancelled.
-                    if(tabChanged&&IsCurrent&&GetForegroundWindow()==expected.Handle) {
-                        SelectNativeTab(expected,"Library",isCurrent);
-                        await Task.Delay(100);
-                    }
-                }catch(Exception e){if(failure==null)failure=e;}
-                if(failure!=null)System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
-                return result;
+                    previous=current;
+                }
+                throw new InvalidOperationException("C1 当前样式尚未稳定，已停止；请稍后重试。");
             }
             public async Task SendShortcut() {
                 progress("目标与当前样式已核对，正在切换 "+binding.Style.Name+"…");
                 await Send(binding,expected,armed,appRoot,isCurrent);
             }
+            public async Task RemoveCurrentStyle(string styleName) {
+                if(clearSent)throw new InvalidOperationException("清除指令已发送，不会重复切换。");
+                if(lastObservedStyles==null||lastObservedStyles.Length!=1||!String.Equals(lastObservedStyles[0],styleName,StringComparison.Ordinal))
+                    throw new InvalidOperationException("当前样式未能唯一确认，未清除。");
+                var matches=clearBindings.Where(b=>b!=null&&b.Style!=null&&String.Equals(b.Style.Name,styleName,StringComparison.Ordinal)).ToArray();
+                if(matches.Length!=1)throw new InvalidOperationException("当前样式没有唯一的已连接快捷键，未清除。");
+                progress("正在清除 "+styleName+"…");
+                // The same native style command toggles off the confirmed current
+                // style. Send once only; never use reset-all or retry on uncertainty.
+                clearSent=true;
+                await Send(matches[0],expected,armed,appRoot,isCurrent);
+            }
         }
         public static Task<StyleApplyResult> Apply(StyleBinding binding,TargetSnapshot expected,TargetSnapshot armed,string appRoot,
             Func<bool> isCurrent,IEnumerable<string> supported,Action<string> progress) {
             return StyleWorkflow.Run(new LiveStyleSession(binding,expected,armed,appRoot,isCurrent,progress),binding.Style.Name,supported);
+        }
+        public static Task<StyleClearResult> Clear(TargetSnapshot expected,TargetSnapshot armed,string appRoot,
+            Func<bool> isCurrent,IEnumerable<StyleBinding> bindings,Action<string> progress) {
+            var available=(bindings??Enumerable.Empty<StyleBinding>()).Where(b=>b!=null&&b.Style!=null).ToArray();
+            return StyleClearWorkflow.Run(new LiveStyleSession(null,expected,armed,appRoot,isCurrent,progress,available),
+                available.Select(b=>b.Style.Name));
         }
         static async Task Send(StyleBinding binding, TargetSnapshot expected, TargetSnapshot armed, string appRoot,Func<bool> isCurrent) {
             string reason=SafetyPolicy.Check(expected,armed);

@@ -9,8 +9,8 @@ using System.Threading;
 using System.Windows.Forms;
 using System.Web.Script.Serialization;
 
-[assembly:System.Reflection.AssemblyVersion("0.4.0.0")]
-[assembly:System.Reflection.AssemblyFileVersion("0.4.0.0")]
+[assembly:System.Reflection.AssemblyVersion("0.5.0.0")]
+[assembly:System.Reflection.AssemblyFileVersion("0.5.0.0")]
 
 namespace RniPanel {
     static class Program {
@@ -42,7 +42,7 @@ namespace RniPanel {
         ComboBox category;
         FlowLayoutPanel films;
         Label counts,connection,target,status;
-        Button connectButton,lockButton,helpButton;
+        Button connectButton,lockButton,helpButton,clearButton;
         int armedId;
         TargetSnapshot armedTarget;
         TargetSnapshot connectedCatalog;
@@ -50,7 +50,7 @@ namespace RniPanel {
         string confirmedStyleUuid;
         bool busy,booting=true,setupAcknowledged;
         public PanelWindow() {
-            Text="RNI Palette · 0.4";Name="RniPaletteWindow";StartPosition=FormStartPosition.CenterScreen;
+            Text="RNI Palette · 0.5";Name="RniPaletteWindow";StartPosition=FormStartPosition.CenterScreen;
             Size=new Size(490,820);MinimumSize=new Size(440,640);BackColor=bg;ForeColor=ink;Font=new Font("Microsoft YaHei UI",9F);AutoScaleMode=AutoScaleMode.Dpi;
             store=new PreferencesStore(PreferencesStore.SharedDirectory);
             try {store.ImportIfMissing(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"data","favorites.json"));preferences=store.Load();} catch(Exception e){preferences=new PanelPreferences();Shown+=(s,a)=>MessageBox.Show("收藏未加载；原文件保留。\n"+e.Message,"收藏文件检查");}
@@ -82,7 +82,7 @@ namespace RniPanel {
             Controls.Add(outer);
             var header=new Panel {Dock=DockStyle.Fill};outer.Controls.Add(header,0,0);
             var title=MakeLabel("RNI  /  PALETTE",33,ink,18F);title.Top=0;title.Dock=DockStyle.None;title.Width=360;header.Controls.Add(title);
-            var sub=MakeLabel("胶片收藏夹   ·   当前单张照片 0.4",26,mute);sub.Dock=DockStyle.None;sub.Top=38;sub.Width=360;header.Controls.Add(sub);
+            var sub=MakeLabel("胶片收藏夹   ·   清除样式 / 不跳页 0.5",26,mute);sub.Dock=DockStyle.None;sub.Top=38;sub.Width=360;header.Controls.Add(sub);
             pin=new CheckBox {Text="置顶",Checked=preferences.TopMost,ForeColor=mute,Width=62,Height=28,Anchor=AnchorStyles.Top|AnchorStyles.Right,Left=350,Top=6};header.Controls.Add(pin);
             header.Resize+=(s,e)=>pin.Left=header.ClientSize.Width-62;
             pin.CheckedChanged+=(s,e)=>{TopMost=pin.Checked;preferences.TopMost=pin.Checked;Save();};
@@ -98,8 +98,13 @@ namespace RniPanel {
             var safety=new Panel {Dock=DockStyle.Fill,BackColor=Color.FromArgb(40,43,41),Padding=new Padding(10)};outer.Controls.Add(safety,0,1);
             connection=MakeLabel("● 预览模式 — 不会发送按键",25,accent,9F);connection.Dock=DockStyle.None;connection.Left=10;connection.Top=6;connection.Width=410;safety.Controls.Add(connection);
             target=MakeLabel("未连接；先在 C1 中单选照片，再连接当前图库",24,mute,8F);target.Dock=DockStyle.None;target.Left=10;target.Top=32;target.Width=410;safety.Controls.Add(target);
-            live=new CheckBox {Text="启用连接（当前单选照片）",Left=10,Top=59,Width=340,Height=25,Enabled=false,ForeColor=ink};safety.Controls.Add(live);
-            live.CheckedChanged+=(s,e)=>{attemptGate.Cancel();connection.Text=live.Checked?"● 已连接 — 点击作用于当前单张照片":"● 预览模式 — 不会发送按键";if(!live.Checked){confirmedStyleUuid=null;UpdateHighlights();}};
+            live=new CheckBox {Text="启用连接（当前单选照片）",Left=10,Top=59,Width=265,Height=25,Enabled=false,ForeColor=ink};safety.Controls.Add(live);
+            live.CheckedChanged+=(s,e)=>{attemptGate.Cancel();connection.Text=live.Checked?"● 已连接 — 点击作用于当前单张照片":"● 预览模式 — 不会发送按键";if(clearButton!=null)clearButton.Enabled=live.Checked&&!busy;if(!live.Checked){confirmedStyleUuid=null;UpdateHighlights();}};
+            clearButton=MakeButton("清除 RNI",98);clearButton.Name="ClearRniStyle";clearButton.AccessibleName="清除当前 RNI 样式";
+            clearButton.Height=28;clearButton.Top=56;clearButton.Left=310;clearButton.Enabled=false;clearButton.Anchor=AnchorStyles.Top|AnchorStyles.Right;
+            clearButton.Click+=async(s,e)=>await ClearStyle();safety.Controls.Add(clearButton);
+            safety.Resize+=(s,e)=>{clearButton.Left=safety.ClientSize.Width-108;live.Width=Math.Max(190,safety.ClientSize.Width-130);};
+            var clearTip=new ToolTip();clearTip.SetToolTip(clearButton,"只移除面板支持的当前 RNI 样式，不执行整张照片重置。");clearButton.Disposed+=(s,e)=>clearTip.Dispose();
             films=new FlowLayoutPanel {Name="FilmCards",Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true,BackColor=bg,Padding=new Padding(0,10,0,0)};outer.Controls.Add(films,0,2);
             films.ClientSizeChanged+=(s,e)=>ResizeCards();
             var footer=new Panel {Dock=DockStyle.Fill,Padding=new Padding(0,10,0,0)};outer.Controls.Add(footer,0,3);
@@ -165,6 +170,7 @@ namespace RniPanel {
             if(IsDisposed||Disposing)return;
             UseWaitCursor=value;films.Enabled=!value;search.Enabled=!value;category.Enabled=!value;favoritesOnly.Enabled=!value;
             connectButton.Enabled=!value;lockButton.Enabled=!value;helpButton.Enabled=!value;
+            clearButton.Enabled=!value&&live.Checked;
         }
         void UpdateHighlights() {
             if(films==null||IsDisposed||Disposing)return;
@@ -175,7 +181,7 @@ namespace RniPanel {
         }
         void Record(string action,FilmStyle style,string message) {
             Directory.CreateDirectory(store.DirectoryPath);
-            var record=new {at=DateTimeOffset.Now.ToString("o"),version="0.4",action=action,
+            var record=new {at=DateTimeOffset.Now.ToString("o"),version="0.5",action=action,
                 catalog=armedTarget==null?null:armedTarget.DocumentPath,variantId=armedId,
                 variantUuid=armedTarget==null?null:armedTarget.VariantUuid,
                 style=style==null?null:style.Name,styleUuid=style==null?null:style.Uuid,message=message};
@@ -237,15 +243,43 @@ namespace RniPanel {
                 if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message,true);}
             }finally{SetBusy(false);}
         }
+        async Task ClearStyle() {
+            if(busy)return;
+            if(!live.Checked){SetStatus("当前是预览模式；请先连接图库。未清除。",false);return;}
+            long permit=attemptGate.Capture();
+            Func<bool> isCurrent=()=>!IsDisposed&&!Disposing&&live.Checked&&attemptGate.IsCurrent(permit);
+            SetBusy(true);SetStatus("正在读取当前 RNI 样式，准备清除…",false);
+            try {
+                var settings=CaptureSettings.Read(appRoot);string reason;
+                if(!setupAcknowledged||settings.ShortcutName!=Shortcuts.SetName||!settings.ReplaceStyles||settings.AutoSyncMetadata!="None")
+                    throw new InvalidOperationException("连接条件已改变，请重新连接图库。未清除。");
+                var observed=await Task.Run(()=>CaptureOneBridge.Inspect(appRoot));
+                if(!isCurrent())throw new OperationCanceledException("连接已取消，未清除。");
+                if(!SafetyPolicy.IsAllowedCatalog(observed.DocumentPath))throw new InvalidOperationException("当前不是支持的图库，未清除。");
+                reason=SafetyPolicy.CheckDocument(observed,connectedCatalog);if(reason!=null)throw new InvalidOperationException(reason);
+                if(observed.SelectedCount!=1){SetStatus("请在 C1 中只选一张照片，然后再清除。未发送。",true);return;}
+                reason=SafetyPolicy.Check(observed,observed);if(reason!=null)throw new InvalidOperationException(reason);
+                armedTarget=observed;armedId=observed.VariantId;target.Text="本次："+observed.FileName+" · #"+armedId;
+                Record("clear-requested",null,"remove only the currently applied supported RNI style");
+                var result=await CaptureOneBridge.Clear(observed,observed,appRoot,isCurrent,bindings,message=>{SetStatus(message,false);Record("phase",null,message);});
+                if(!isCurrent())throw new OperationCanceledException("连接已取消，结果请以 C1 为准。");
+                confirmedStyleUuid=null;UpdateHighlights();
+                Record(result.Sent?"clear-native-confirmed":"clear-already-empty",null,result.RemovedStyle??"no applied style");
+                SetStatus(result.Sent?"已清除 "+result.RemovedStyle+" → "+observed.FileName:"当前没有已应用样式，无需清除。",false);
+            }catch(Exception e){
+                try{Record("clear-stopped",null,e.ToString());}catch{}
+                if(!IsDisposed&&!Disposing){live.Checked=false;live.Enabled=false;setupAcknowledged=false;SetStatus("连接已暂停："+e.Message,true);}
+            }finally{SetBusy(false);}
+        }
         void ShowSetup() {
             string current="未读取";bool mode=false;string details="";
             try{var settings=CaptureSettings.Read(appRoot);current=settings.ShortcutName;mode=settings.ReplaceStyles;}catch(Exception e){details=e.Message;}
             string why;bool valid=Shortcuts.Verify(Shortcuts.InstalledPath,bindings,out why);
-            string text="RNI Palette — 连接检查\n\n当前键集："+current+"\n替换样式："+(mode?"已配置":"未配置")+"\n已接入："+(valid?"Portra 160 / 400，8档":why)+"\n\n1. C1 打开 Photography-Master 或 RNI-Panel-Sandbox。\n2. 在“图库”页单选照片；不需要筛选成1/1。\n3. 点击“连接当前图库”，确认完整路径。\n4. 之后可直接换照片、点档位。\n\n每次读取原生已应用样式，短暂切换样式/图库页。\n请展开“样式与预设”；同档不重发，未知或混合样式拒绝。\n暂不支持同名/多变体、比较查看器及多选。\n收藏和日志："+store.DirectoryPath+"\n"+details;
+            string text="RNI Palette — 连接检查\n\n当前键集："+current+"\n替换样式："+(mode?"已配置":"未配置")+"\n已接入："+(valid?"Portra 160 / 400，8档":why)+"\n\n一次设置（消除跳页）：\nC1 图库页内右键 → 添加工具 → 样式与预设。\n将工具展开并保持可见。\n\n1. 在工作主库或沙盒中单选照片。\n2. 在面板连接当前图库。\n3. 点档位应用，或用“清除 RNI”移除当前样式。\n\n0.5只读当前页控件，不会自动切换C1工具页。\n清除不执行整图重置；没有样式时不发送。\n同名/多变体、比较查看器、多选及混合样式暂不支持。\n收藏和日志："+store.DirectoryPath+"\n"+details;
             MessageBox.Show(this,text,"连接设置",MessageBoxButtons.OK,MessageBoxIcon.Information);
         }
         void ShowHelp() {
-            MessageBox.Show(this,"RNI Palette 0.4 — 当前单张照片\n\n• 默认只显示已接入的 Portra 160 / 400；其他胶片切“全部类型”浏览。\n• 强度对应厂商提供的 25 / 50 / 75 / 100% 文件。\n• 默认预览，主动确认连接当前工作主库或沙盒后才能应用。\n• 同一图库内可换照片，不用重连，也不用筛选到1/1。\n• 每次只处理点击时的单选照片；执行期间换图即停止。\n• 当前同档不重发，允许来回切档；结果从 C1 原生界面回读。\n• 多选、同名/多变体、混合/未知样式暂不支持。\n• 不改图库数据库、原片、C1设置或厂商样式。\n• 收藏和窗口位置跨新版共享；不做程序/照片的常规校验和。\n\n数据："+store.DirectoryPath+"\n取消连接或关闭面板即可停用。","使用说明",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            MessageBox.Show(this,"RNI Palette 0.5 — 清除样式 / 不跳页\n\n• 在 C1 图库页添加并展开“样式与预设”工具一次。\n• 面板直接读当前页；没有所需工具时提示，不再自动跳页。\n• “清除 RNI”移除已应用的面板支持样式，不执行整图重置。\n• 没有样式时清除不发送；未知/混合样式不会一并清除。\n• Portra 160 / 400 的25/50/75/100档位、收藏和往返操作保留。\n• 仍需主动连接当前图库；自动连接与批量留待后续版本。\n• 同一图库可换照片，不用逐张重连或筛选到1/1。\n• 只处理当前单张，不改原片或在线数据库。\n\n数据："+store.DirectoryPath+"\n取消连接或关闭面板即可停用。","使用说明",MessageBoxButtons.OK,MessageBoxIcon.Information);
         }
     }
 }

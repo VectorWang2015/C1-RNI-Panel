@@ -316,6 +316,43 @@ namespace RniPanel {
         public bool Sent;
         public string ConfirmedStyle;
     }
+    public interface IClearStyleSession {
+        bool IsCurrent {get;}
+        Task ValidateTarget();
+        Task<string[]> ReadAppliedStyles();
+        Task RemoveCurrentStyle(string styleName);
+    }
+    public sealed class StyleClearResult {
+        public bool Sent;
+        public string RemovedStyle;
+    }
+    public static class StyleClearWorkflow {
+        static void RequireCurrent(IClearStyleSession session) {
+            if(!session.IsCurrent)throw new OperationCanceledException("连接已取消；不再执行后续动作。");
+        }
+        public static async Task<StyleClearResult> Run(IClearStyleSession session,IEnumerable<string> supported) {
+            RequireCurrent(session);
+            await session.ValidateTarget();
+            RequireCurrent(session);
+            var before=await session.ReadAppliedStyles();
+            RequireCurrent(session);
+            if(before==null)throw new InvalidOperationException("未读到当前样式，未清除。");
+            if(before.Length>1)throw new InvalidOperationException("当前有多个样式或预设，暂不一起清除；未发送。");
+            if(before.Length==1&&!(supported??Enumerable.Empty<string>()).Contains(before[0],StringComparer.Ordinal))
+                throw new InvalidOperationException("当前不是面板支持的 RNI 样式，未清除。");
+            await session.ValidateTarget();
+            RequireCurrent(session);
+            if(before.Length==0)return new StyleClearResult {Sent=false};
+            await session.RemoveCurrentStyle(before[0]); // Intentional native toggle, once only; never reset all adjustments.
+            RequireCurrent(session);
+            var after=await session.ReadAppliedStyles();
+            RequireCurrent(session);
+            await session.ValidateTarget();
+            RequireCurrent(session);
+            if(after==null||after.Length!=0)throw new InvalidOperationException("已发送清除，但未确认样式列表为空；已停止，不会自动重发。");
+            return new StyleClearResult {Sent=true,RemovedStyle=before[0]};
+        }
+    }
     public static class StyleWorkflow {
         static void RequireCurrent(ILiveStyleSession session) {
             if(!session.IsCurrent)throw new OperationCanceledException("连接已取消；不再执行后续动作。");

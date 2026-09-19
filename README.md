@@ -4,8 +4,10 @@ A small, single-user Windows companion for Capture One: film search, favorites, 
 
 This is an independent helper, not an embedded Capture One plugin. Capture One and the RNI styles must already be installed and licensed. No vendor ICC profiles, styles, program files, catalog data, or photographs are included.
 
-## Current version: 0.4
+## Current version: 0.5
 
+- **Clear RNI** removes the currently applied, supported RNI style through one native toggle; it never resets all adjustments. An empty applied list is a no-op, and unknown/mixed stacks are not cleared.
+- **No automatic tab switching.** Add and expand Capture One's **Styles and Presets** tool in the **Library** tab once, keeping it visible. The palette reads that tool directly; if it is absent/collapsed, it prompts rather than switching tabs.
 - Connect the current work catalog once, then apply to its **currently selected single photo**.
 - No need to filter the browser down to `1/1`; `1/N` is supported when the viewer and globally unique catalog record agree.
 - Each click fixes its own target for the entire operation. Changing photos during an operation, changing catalogs, a modal, or lost focus stops that operation.
@@ -22,6 +24,8 @@ The current configuration is specific to the owner's Windows Capture One install
 Multiple selections, ambiguous filenames, multiple variants of one image, comparison viewers, unknown existing styles and mixed style stacks are deliberately unsupported. The helper never writes the catalog database itself or changes original image files. There is no automatic restoration of historical Lightroom edits.
 
 Existing local Capture One prerequisites: `RNI Panel Demo` key set, native Styles replacement mode enabled, and metadata auto-sync disabled. The app does not silently install or change these settings.
+
+For the one-time no-tab-switch layout, right-click within the Library tool tab, choose **Add Tool → Styles and Presets**, and keep the tool expanded. This is a native workspace customization, not a plugin installation. See [Capture One's tool instructions](https://support.captureone.com/hc/en-us/articles/360003159377-How-do-I-add-a-floating-tool).
 
 ## Build
 
@@ -41,7 +45,9 @@ Use a fresh test output directory for each run: tests intentionally refuse to ov
 - `NativeBridge.cs`: Windows UI Automation, guarded native shortcut dispatch, and live style readback.
 - `App.cs`: Windows Forms palette and explicit catalog connection.
 
-The 0.3 native readback / round-trip / repeated-click behavior was accepted by the user. The 0.4 selection and catalog-connection extension has local regression coverage and is not described as agent-tested main-catalog editing.
+The user accepted 0.4 operation and favorites, including the earlier native readback / round-trip / repeated-click behavior. Version 0.5 adds clear and direct visible-tool readback; it is compiled and handed to the user for actual-use feedback, without another full regression campaign or agent-driven photo edits.
+
+Auto-connect and batch application are deferred. Batch research confirmed that native shortcuts toggle off when all affected images already carry the style, while visible style checkmarks describe only the primary image. A future batch workflow must not reuse the single-photo state decision or assume a background context-menu item is an unconditional apply command.
 
 ## Development synchronization
 

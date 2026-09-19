@@ -1,6 +1,6 @@
 # RNI Palette
 
-0.4 use and favorites are user-accepted. Requested next: clear current RNI, auto-follow selection, batch apply, and fewer tab switches; not implemented yet. Broader context: `D:\照片\AGENTS.md`.
+0.4 use/favorites are accepted. 0.5 adds Clear RNI and direct visible-tool readback without tab switching; user adds/expands Styles and Presets on Library once. Auto-connect and batch are deferred. Broader context: `D:\照片\AGENTS.md`.
 
 ## Work
 

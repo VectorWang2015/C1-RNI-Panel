@@ -8,6 +8,8 @@ This is an independent helper, not an embedded Capture One plugin. Capture One a
 
 **Accepted and frozen on 2026-09-20.** After a subsequent focus-stop report, the user retested and confirmed there was no problem, then requested this version be finalized and pushed. Version `0.6.2` is the current accepted baseline. No further focus-handling changes or agent-driven full-selection retest were made after that confirmation. The delivered executable remains the build from `b0b9d1a`; release finalization changes documentation only. Tag: `v0.6.2`.
 
+**Test sandbox retired on 2026-09-20.** At the user's request, after C1 was closed, the temporary `qa/RNI-Panel-Sandbox` directory was moved to Windows Recycle Bin. No managed originals were inside; work photos/catalog, programs and preferences were untouched. Existing live results remain historical evidence. The ignored local test fixture now refers to an absent database and must not be used without deliberately provisioning a new authorized test environment. This cleanup did not change the accepted executable or release tag.
+
 ### 0.6.2: imported copies replace the built-in native path
 
 The user reproduced `style-path-unavailable` on 0.6.1. The version-name correction was necessary but insufficient: a live UIA inspection found that the requested leaves were absent from the built-in folder. Same-UUID copies existed in a custom favorites folder under `Styles50`. C1's library deduplicates by UUID and the loaded user copies appeared under **自定义样式 / User Styles**, not at the original built-in paths. All twelve local copies matched their original files' UUID and content. No files were moved or modified to resolve this.

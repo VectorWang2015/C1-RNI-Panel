@@ -309,10 +309,14 @@ namespace RniPanel {
             public AutomationElement List,Tool,Header;
         }
         sealed class NativeStyleReader {
+            sealed class StyleControl {
+                public AutomationElement Box;
+                public NativeStyleSource Source;
+            }
             readonly IntPtr handle;
             readonly long processStart;
             StyleListReference[] candidates;
-            readonly Dictionary<string,AutomationElement> styleBoxes=new Dictionary<string,AutomationElement>(StringComparer.OrdinalIgnoreCase);
+            readonly Dictionary<string,StyleControl> styleBoxes=new Dictionary<string,StyleControl>(StringComparer.OrdinalIgnoreCase);
             public Action OperationGuard=delegate{};
             public Action<string> Stage=delegate{};
             public NativeStyleReader(TargetSnapshot target){handle=target.Handle;processStart=target.ProcessStartTicks;}
@@ -464,9 +468,9 @@ namespace RniPanel {
                 Stage("prepare-style.begin "+(binding==null||binding.Style==null?"?":binding.Style.Name));
                 if(binding==null||binding.Style==null||binding.NativePath==null||binding.NativePath.Length<2)
                     throw new StylesReadException("style-path-missing","样式没有完整原生路径，未发送。");
-                AutomationElement cached;
+                StyleControl cached;
                 if(styleBoxes.TryGetValue(binding.Style.Uuid,out cached)) {
-                    try {if(cached.Current.Name==binding.Style.NativeName&&cached.Current.IsEnabled){Stage("prepare-style.cached");return cached;}}
+                    try {if(cached.Box.Current.Name==cached.Source.Name&&cached.Box.Current.IsEnabled){Stage("prepare-style.cached");return cached.Box;}}
                     catch(ElementNotAvailableException){}
                     styleBoxes.Remove(binding.Style.Uuid);
                 }
@@ -475,33 +479,47 @@ namespace RniPanel {
                 Stage("prepare-style.trees.begin");
                 var trees=FindStyleTrees(owner);
                 Stage("prepare-style.trees.end count="+trees.Length);
+                // Imported copies override built-ins by UUID inside C1. Try the
+                // indexed user locations first, then the original path. Missing
+                // paths are not permission to search globally by a similar name.
+                foreach(var source in binding.Style.NativeSources.OrderByDescending(s=>s.UserStyle)) {
+                    var box=FindSourceBox(trees,source,validate);
+                    if(box==null)continue;
+                    styleBoxes[binding.Style.Uuid]=new StyleControl {Box=box,Source=source};
+                    Stage("prepare-style.ready source="+source.FilePath+" uuid="+binding.Style.Uuid);
+                    return box;
+                }
+                throw new StylesReadException("style-path-unavailable","原生样式未出现在已索引的 "+binding.Style.NativeSources.Count+" 个 UUID 对应路径中："+binding.Style.Name+"。未发送。");
+            }
+            AutomationElement FindSourceBox(AutomationElement[] trees,NativeStyleSource source,Action validate) {
                 var roots=new List<AutomationElement>();
-                bool user=binding.Style.Path.StartsWith(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOne")+System.IO.Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
                 foreach(var tree in trees)foreach(var wrapper in Children(tree,ControlType.TreeItem)) {
                     string label=ItemLabel(wrapper);
-                    bool matches=user?(label=="用户样式"||String.Equals(label,"User Styles",StringComparison.OrdinalIgnoreCase)):
+                    bool matches=source.UserStyle?(label=="自定义样式"||label=="用户样式"||String.Equals(label,"User Styles",StringComparison.OrdinalIgnoreCase)):
                         (label=="内置样式"||String.Equals(label,"Built-in Styles",StringComparison.OrdinalIgnoreCase)||String.Equals(label,"Built In Styles",StringComparison.OrdinalIgnoreCase));
                     if(!matches)continue;
                     Stage("prepare-style.wrapper "+label);
                     Expand(wrapper,validate);
-                    roots.AddRange(Children(wrapper,ControlType.TreeItem).Where(e=>String.Equals(ItemLabel(e),binding.NativePath[0],StringComparison.Ordinal)));
+                    roots.AddRange(Children(wrapper,ControlType.TreeItem).Where(e=>String.Equals(ItemLabel(e),source.TreePath[0],StringComparison.Ordinal)));
                 }
-                if(roots.Count!=1)throw new StylesReadException("style-root-ambiguous","不能唯一定位原生样式目录："+binding.NativePath[0]+"。未发送。");
+                if(roots.Count==0){Stage("prepare-style.source-absent "+source.FilePath);return null;}
+                if(roots.Count!=1)throw new StylesReadException("style-root-ambiguous","不能唯一定位原生样式目录："+source.TreePath[0]+"。未发送。");
                 var item=roots[0];
-                for(int i=1;i<binding.NativePath.Length;i++) {
-                    Stage("prepare-style.path.expand "+binding.NativePath[i-1]);
+                for(int i=1;i<source.TreePath.Length;i++) {
+                    Stage("prepare-style.path.expand "+source.TreePath[i-1]);
                     validate();Expand(item,validate);
-                    Stage("prepare-style.path.children "+binding.NativePath[i]);
-                    var matches=Children(item,ControlType.TreeItem).Where(e=>String.Equals(ItemLabel(e),binding.NativePath[i],StringComparison.Ordinal)).ToArray();
-                    Stage("prepare-style.path.matched "+binding.NativePath[i]+" count="+matches.Length);
-                    if(matches.Length!=1)throw new StylesReadException("style-path-unavailable","原生样式路径不能唯一定位："+String.Join(" / ",binding.NativePath.Take(i+1))+"。未发送。");
+                    Stage("prepare-style.path.children "+source.TreePath[i]);
+                    var matches=Children(item,ControlType.TreeItem).Where(e=>String.Equals(ItemLabel(e),source.TreePath[i],StringComparison.Ordinal)).ToArray();
+                    Stage("prepare-style.path.matched "+source.TreePath[i]+" count="+matches.Length);
+                    if(matches.Length==0){Stage("prepare-style.source-absent "+source.FilePath);return null;}
+                    if(matches.Length!=1)throw new StylesReadException("style-path-ambiguous","原生样式路径有重复项："+String.Join(" / ",source.TreePath.Take(i+1))+"。未发送。");
                     item=matches[0];
                 }
                 Stage("prepare-style.checkbox.begin");
                 var boxes=item.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.AutomationIdProperty,"StyleCheckBox")).Cast<AutomationElement>()
-                    .Where(e=>e.Current.Name==binding.Style.NativeName).ToArray();
-                if(boxes.Length!=1)throw new StylesReadException("style-checkbox-unavailable","原生样式没有唯一可操作的勾选控件："+binding.Style.Name+"。未发送。");
-                styleBoxes[binding.Style.Uuid]=boxes[0];Stage("prepare-style.ready");return boxes[0];
+                    .Where(e=>e.Current.Name==source.Name).ToArray();
+                if(boxes.Length!=1)throw new StylesReadException("style-checkbox-unavailable","原生样式没有唯一可操作的勾选控件："+source.Name+"。未发送。");
+                return boxes[0];
             }
             public ToggleState StyleState(StyleBinding binding,Action validate) {
                 validate();var box=StyleBox(binding,validate);object toggle;
@@ -521,11 +539,11 @@ namespace RniPanel {
                     // observation; otherwise use the exact applied-row fallback.
                     var checkedMatches=new List<StyleBinding>();
                     foreach(var match in matches) {
-                        AutomationElement box;object toggle;
-                        if(!styleBoxes.TryGetValue(match.Style.Uuid,out box))continue;
+                        StyleControl control;object toggle;
+                        if(!styleBoxes.TryGetValue(match.Style.Uuid,out control))continue;
                         try {
                             guarded();
-                            if(box.Current.Name==match.Style.NativeName&&box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle)&&((TogglePattern)toggle).Current.ToggleState==ToggleState.On)
+                            if(control.Box.Current.Name==control.Source.Name&&control.Box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle)&&((TogglePattern)toggle).Current.ToggleState==ToggleState.On)
                                 checkedMatches.Add(match);
                         }catch(ElementNotAvailableException){styleBoxes.Remove(match.Style.Uuid);}
                     }
@@ -577,9 +595,10 @@ namespace RniPanel {
                 // Path discovery is completed during read/preflight, before the
                 // workflow's final target check. A send never performs slow tree
                 // expansion and then acts on an old photo snapshot.
-                AutomationElement box;object toggle;
-                if(!styleBoxes.TryGetValue(binding.Style.Uuid,out box)||box.Current.Name!=binding.Style.NativeName||!box.Current.IsEnabled)
+                StyleControl control;object toggle;
+                if(!styleBoxes.TryGetValue(binding.Style.Uuid,out control)||control.Box.Current.Name!=control.Source.Name||!control.Box.Current.IsEnabled)
                     throw new StylesReadException("style-leaf-stale","已核对的原生样式控件失效，本次未发送；请重新点击。");
+                var box=control.Box;
                 if(!box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle))throw new StylesReadException("style-toggle-unavailable","原生样式不支持勾选操作，未发送。");
                 var state=((TogglePattern)toggle).Current.ToggleState;
                 if(state==ToggleState.Indeterminate||state!=(remove?ToggleState.On:ToggleState.Off))

@@ -4,9 +4,25 @@ A small, single-user Windows companion for Capture One: film search, favorites, 
 
 This is an independent helper, not an embedded Capture One plugin. Capture One and the RNI styles must already be installed and licensed. No vendor ICC profiles, styles, program files, catalog data, or photographs are included.
 
-## Current version: 0.6.1
+## Current version: 0.6.2
 
-### 0.6.1: native filename / XML-name mapping
+### 0.6.2: imported copies replace the built-in native path
+
+The user reproduced `style-path-unavailable` on 0.6.1. The version-name correction was necessary but insufficient: a live UIA inspection found that the requested leaves were absent from the built-in folder. Same-UUID copies existed in a custom favorites folder under `Styles50`. C1's library deduplicates by UUID and the loaded user copies appeared under **自定义样式 / User Styles**, not at the original built-in paths. All twelve local copies matched their original files' UUID and content. No files were moved or modified to resolve this.
+
+The index now discovers user-library copies in arbitrary folders by an already-indexed RNI UUID. Each film keeps its original card/favorite ID and gains exact alternative source paths and their native/XML names. The bridge tries these user paths and then the original built-in path, retaining the actual resolved source name with its checkbox. This is not a `000_Favourites` or Portra whitelist and does not use fuzzy name matching. Restart the panel after importing/moving style files to refresh its index; C1 does not need restarting.
+
+**Fresh live validation on 2026-09-20:** an opt-in test harness used the production UIA reader and `NativeBatchSession`, not fake controls. It re-confirmed the full sandbox path and selection, then:
+
+- Resolved all twelve four-strength paths for Natura 1600, Portra 160 V.5 and Portra 400 V.2 in their user-library locations, plus a built-in-only Portra 160 V.4 path. Path resolution alone is not an application test.
+- Operated on two distinct, initially style-empty selected sandbox primaries: each applied Portra 160 V.5 100%, switched to Portra 400 V.2 25%, and cleared RNI. Each operation was confirmed by the native applied list. Repeating 400 V.2 25% on the second photo sent no command.
+- Kept the existing nineteen-photo selection; only those two primaries were modified. Both ended style-empty and the original primary/count/edit mode were restored. This was a targeted test of the production per-primary batch adapter, not a nineteen-photo full-batch UI-button test.
+
+Build passed; 106 checks passed with the optional local read-only identity fixture (102 without it). Added focused tests cover arbitrary user folders/renamed copies, exact UUID matching, unchanged favorites/cards and idempotent discovery. No primary-catalog changes, online database writes, original-media edits, C1 restart or vendor-asset changes. Live logs remain local, not in Git.
+
+`tests/NativeSmoke.cs` is an explicitly invoked integration harness, not bundled in the panel. It refuses other catalogs or a running panel, checks physical Esc and native target guards, and its `pair` mode requires two initially style-empty primaries. Compile it separately against the built `RniPanel.exe`; arguments are `paths|pair <new-log-path>`. On failure inspect the retained C1 scene; it does not attempt rollback or retry uncertain commands.
+
+### 0.6.1: native filename / XML-name mapping (incomplete fix; superseded)
 
 The user confirmed multi-photo Natura 1600 application and clearing, then reported `style-path-unavailable` for Portra 160 V.5 and Portra 400 V.2. C1's source tree displays the filename stem (`v5`, `v2`), while these files' XML names contain `V.5`, `V.2`. The old path builder incorrectly used XML Name for the source-tree leaf.
 

@@ -13,6 +13,13 @@ using System.Xml;
 using System.Xml.Linq;
 
 namespace RniPanel {
+    public sealed class NativeStyleSource {
+        public string FilePath {get;set;}
+        public string[] TreePath {get;set;}
+        public bool UserStyle {get;set;}
+        public string XmlName {get;set;}
+        public string Name {get{return System.IO.Path.GetFileNameWithoutExtension(FilePath);}}
+    }
     public sealed class FilmStyle {
         public string Path { get; set; }
         public string Name { get; set; }
@@ -23,9 +30,10 @@ namespace RniPanel {
         // C1's source tree displays the filename stem, not XML Name (for
         // example "v5" versus "V.5"). Keep Name for UI/family/favorites IDs.
         public string NativeName {get{return String.IsNullOrWhiteSpace(Path)?Name:System.IO.Path.GetFileNameWithoutExtension(Path);}}
-        public IEnumerable<string> AppliedNames {get{return new[]{Name,NativeName}.Where(n=>!String.IsNullOrWhiteSpace(n)).Distinct(StringComparer.Ordinal);}}
-        public bool MatchesAppliedName(string name) {return !String.IsNullOrWhiteSpace(name)&&
-            (String.Equals(name,Name,StringComparison.Ordinal)||String.Equals(name,NativeName,StringComparison.Ordinal));}
+        public List<NativeStyleSource> NativeSources = new List<NativeStyleSource>();
+        public IEnumerable<string> AppliedNames {get{return new[]{Name,NativeName}.Concat(NativeSources.SelectMany(s=>new[]{s.Name,s.XmlName}))
+            .Where(n=>!String.IsNullOrWhiteSpace(n)).Distinct(StringComparer.Ordinal);}}
+        public bool MatchesAppliedName(string name) {return !String.IsNullOrWhiteSpace(name)&&AppliedNames.Contains(name,StringComparer.Ordinal);}
         // Native C1 tree path, including the RNI root. Unlike Name this remains
         // distinct for standard/grain editions which share the same label.
         public string[] NativePath { get; set; }
@@ -102,14 +110,40 @@ namespace RniPanel {
                         nativePath.AddRange((System.IO.Path.GetDirectoryName(file.Substring(root.Length).TrimStart('\\','/'))??"")
                             .Split(new[]{'\\','/'},StringSplitOptions.RemoveEmptyEntries));
                         nativePath.Add(System.IO.Path.GetFileNameWithoutExtension(file));
-                        family.Styles.Add(new FilmStyle { Path = file, Name = name, Uuid = parsed.ToString("B").ToUpperInvariant(), Icc = icc,
-                            Strength = strength, IccExists = profileExists, NativePath=nativePath.ToArray() });
+                        var style=new FilmStyle { Path = file, Name = name, Uuid = parsed.ToString("B").ToUpperInvariant(), Icc = icc,
+                            Strength = strength, IccExists = profileExists, NativePath=nativePath.ToArray() };
+                        style.NativeSources.Add(new NativeStyleSource {FilePath=file,XmlName=name,TreePath=style.NativePath,
+                            UserStyle=file.StartsWith(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOne")+System.IO.Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase)});
+                        family.Styles.Add(style);
                         result.FileCount++;
                     } catch (Exception e) { result.Warnings.Add(System.IO.Path.GetFileName(file) + "：" + e.Message); }
                 }
             }
             result.Families = groups.Values.OrderBy(f => f.Grain).ThenBy(f => f.Rendered).ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ThenBy(f => f.Folder).ToList();
+            AddUserStyleSources(result,new[]{"Styles","Styles50"}.Select(sub=>System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CaptureOne",sub)));
             return result;
+        }
+        // C1 deduplicates library entries by UUID: an imported copy can replace
+        // its built-in tree location. Discover arbitrary user folders by UUID,
+        // without adding duplicate film cards or changing favorite IDs.
+        public static void AddUserStyleSources(StyleCatalog catalog,IEnumerable<string> libraries) {
+            var known=catalog.Families.SelectMany(f=>f.Styles).ToLookup(s=>s.Uuid,StringComparer.OrdinalIgnoreCase);
+            foreach(string library in libraries.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
+                foreach(string file in Directory.GetFiles(library,"*.costyle",SearchOption.AllDirectories)) {
+                    try {
+                        var xml=ReadXml(file);Guid uuid;
+                        string raw=xml.Descendants("E").Where(e=>(string)e.Attribute("K")=="UUID").Select(e=>(string)e.Attribute("V")).SingleOrDefault();
+                        if(!Guid.TryParse(raw,out uuid))continue;
+                        string key=uuid.ToString("B").ToUpperInvariant();
+                        if(!known.Contains(key))continue;
+                        string name=xml.Descendants("E").Where(e=>(string)e.Attribute("K")=="Name").Select(e=>(string)e.Attribute("V")).SingleOrDefault();
+                        var path=file.Substring(library.TrimEnd('\\','/').Length).TrimStart('\\','/').Split('\\','/');
+                        path[path.Length-1]=System.IO.Path.GetFileNameWithoutExtension(file);
+                        foreach(var style in known[key])if(!style.NativeSources.Any(s=>String.Equals(s.FilePath,file,StringComparison.OrdinalIgnoreCase)))
+                            style.NativeSources.Add(new NativeStyleSource {FilePath=file,TreePath=path,UserStyle=true,XmlName=name});
+                    }catch(Exception e) {catalog.Warnings.Add("自定义样式路径读取失败："+System.IO.Path.GetFileName(file)+"："+e.Message);}
+                }
         }
     }
     public sealed class PanelPreferences {

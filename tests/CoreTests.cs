@@ -102,6 +102,32 @@ static class Tests {
         }
         var natura=catalog.Families.Single(f=>f.Name=="Fuji Natura 1600"&&!f.Grain&&!f.Rendered).At(100);
         Check(natura.NativeName==natura.Name&&natura.AppliedNames.Count()==1,"accepted Natura naming is unchanged");
+        string userLibrary=Path.Combine(root,"user-style-library");
+        string customFolder=Path.Combine(userLibrary,"My Collection","Renamed Film");Directory.CreateDirectory(customFolder);
+        string copiedStyle=Path.Combine(customFolder,"Favourite v5.costyle"),foreignStyle=Path.Combine(customFolder,"Unrelated copy.costyle");
+        string fixtureUuid="{65F5DBE8-C048-49A4-856B-26B38BC0BA97}";
+        new XDocument(new XElement("SL",new XElement("E",new XAttribute("K","UUID"),new XAttribute("V",fixtureUuid)),
+            new XElement("E",new XAttribute("K","Name"),new XAttribute("V","Renamed internal V.5 100%")))).Save(copiedStyle);
+        new XDocument(new XElement("SL",new XElement("E",new XAttribute("K","UUID"),new XAttribute("V","{5B0E94DD-F2D6-4C13-872D-E351A2189F57}")),
+            new XElement("E",new XAttribute("K","Name"),new XAttribute("V","Original Film V.5 100%")))).Save(foreignStyle);
+        var fixtureStyle=new FilmStyle {Path=Path.Combine(root,"built-in","Original Film v5 100%.costyle"),Name="Original Film V.5 100%",
+            Uuid=fixtureUuid,Strength=100,NativePath=new[]{"RNI Fixture","Original Film v5 100%"}};
+        fixtureStyle.NativeSources.Add(new NativeStyleSource {FilePath=fixtureStyle.Path,XmlName=fixtureStyle.Name,TreePath=fixtureStyle.NativePath});
+        var fixtureFamily=new FilmFamily {Id="stable-favorite-id",Name="Original Film V.5"};fixtureFamily.Styles.Add(fixtureStyle);
+        var sourceFixture=new StyleCatalog {FileCount=1};sourceFixture.Families.Add(fixtureFamily);
+        Catalog.AddUserStyleSources(sourceFixture,new[]{userLibrary});
+        var importedSource=fixtureStyle.NativeSources.Single(s=>s.UserStyle);
+        Check(importedSource.FilePath==copiedStyle&&importedSource.TreePath.SequenceEqual(new[]{"My Collection","Renamed Film","Favourite v5"}),
+            "same-UUID user copy resolves arbitrary folder and renamed filename under the custom styles wrapper");
+        Check(fixtureStyle.MatchesAppliedName("Favourite v5")&&fixtureStyle.MatchesAppliedName("Renamed internal V.5 100%")&&
+            fixtureStyle.MatchesAppliedName("Original Film V.5 100%"),"user copy contributes its exact native and XML readback aliases");
+        Check(sourceFixture.FileCount==1&&sourceFixture.Families.Count==1&&fixtureFamily.Id=="stable-favorite-id"&&
+            fixtureFamily.Styles.Count==1&&fixtureStyle.NativePath.SequenceEqual(new[]{"RNI Fixture","Original Film v5 100%"}),
+            "additional native sources do not add cards or change canonical paths and favorite IDs");
+        Check(fixtureStyle.NativeSources.Count==2&&!fixtureStyle.NativeSources.Any(s=>s.FilePath==foreignStyle)&&
+            !fixtureStyle.MatchesAppliedName("Unrelated copy"),"same-name file with unrelated UUID is not adopted as an RNI source");
+        Catalog.AddUserStyleSources(sourceFixture,new[]{userLibrary});
+        Check(fixtureStyle.NativeSources.Count==2&&sourceFixture.Warnings.Count==0,"user-source discovery is idempotent for repeated scans");
         Check(allBindings.GroupBy(b=>b.Style.Name).Where(g=>g.Count()>1).All(g=>g.Select(b=>String.Join("/",b.NativePath)).Distinct().Count()==g.Count()),"same-name standard/grain entries have different native paths");
         var nativeOnly=Shortcuts.CreateBindings(catalog,null);
         Check(nativeOnly.Count==allBindings.Count&&nativeOnly.All(b=>b.UsesNativeTree),"full catalog does not require a demo shortcut set");

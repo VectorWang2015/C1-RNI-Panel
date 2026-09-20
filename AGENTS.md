@@ -1,5 +1,7 @@
 # RNI Palette
 
+0.6.1 fixes native source-tree filename stems versus XML names across all styles (1,248/1,680 differ); keep XML-based family IDs/favorites, use exact NativeName for source controls, and accept only each indexed file's XML/native aliases for applied rows. Do not solve V.x with global fuzzy punctuation removal. User accepted Natura multi-photo apply/clear in 0.6. Hotfix build/naming checks passed; 0.6.1 has not been live-applied by the agent. User now allows necessary autonomous testing, but no UI control tool was available this turn; do not imply fresh native confirmation.
+
 0.6 delivery status and exact live evidence are maintained in README/release notes, separate from compilation. The user's 0.4 apply/switch/repeat-click/favorites acceptance remains the baseline; 0.5 failed before sending because its two-second UIA read timed out. Current source implements all installed film paths, selective RNI clear, primary-by-primary batch use and explicit-request viewer preparation. Single-photo apply/switch/repeat/clear/empty-clear and two-photo batch apply/repeat/clear have passed. Batch remains slow; do not claim a fast bulk editor or unmeasured speedups. See README for the final automatic-viewer check. Broader local context: `D:\照片\AGENTS.md`.
 
 ## Work

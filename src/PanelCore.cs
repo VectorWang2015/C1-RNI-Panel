@@ -20,6 +20,12 @@ namespace RniPanel {
         public string Icc { get; set; }
         public int Strength { get; set; }
         public bool IccExists { get; set; }
+        // C1's source tree displays the filename stem, not XML Name (for
+        // example "v5" versus "V.5"). Keep Name for UI/family/favorites IDs.
+        public string NativeName {get{return String.IsNullOrWhiteSpace(Path)?Name:System.IO.Path.GetFileNameWithoutExtension(Path);}}
+        public IEnumerable<string> AppliedNames {get{return new[]{Name,NativeName}.Where(n=>!String.IsNullOrWhiteSpace(n)).Distinct(StringComparer.Ordinal);}}
+        public bool MatchesAppliedName(string name) {return !String.IsNullOrWhiteSpace(name)&&
+            (String.Equals(name,Name,StringComparison.Ordinal)||String.Equals(name,NativeName,StringComparison.Ordinal));}
         // Native C1 tree path, including the RNI root. Unlike Name this remains
         // distinct for standard/grain editions which share the same label.
         public string[] NativePath { get; set; }
@@ -34,7 +40,7 @@ namespace RniPanel {
         public List<FilmStyle> Styles = new List<FilmStyle>();
         public FilmStyle At(int strength) { return Styles.FirstOrDefault(s => s.Strength == strength); }
         public bool Matches(string query) {
-            return Catalog.Normalize(Name + Category + (Grain ? " grain 颗粒" : " standard 标准") + (Rendered ? " jpg tiff" : " raw"))
+            return Catalog.Normalize(Name + Category + (Grain ? " grain 颗粒" : " standard 标准") + (Rendered ? " jpg tiff" : " raw")+" "+String.Join(" ",Styles.Select(s=>s.NativeName)))
                 .Contains(Catalog.Normalize(query));
         }
     }
@@ -95,7 +101,7 @@ namespace RniPanel {
                         var nativePath=new List<string> { System.IO.Path.GetFileName(root.TrimEnd('\\','/')) };
                         nativePath.AddRange((System.IO.Path.GetDirectoryName(file.Substring(root.Length).TrimStart('\\','/'))??"")
                             .Split(new[]{'\\','/'},StringSplitOptions.RemoveEmptyEntries));
-                        nativePath.Add(name);
+                        nativePath.Add(System.IO.Path.GetFileNameWithoutExtension(file));
                         family.Styles.Add(new FilmStyle { Path = file, Name = name, Uuid = parsed.ToString("B").ToUpperInvariant(), Icc = icc,
                             Strength = strength, IccExists = profileExists, NativePath=nativePath.ToArray() });
                         result.FileCount++;

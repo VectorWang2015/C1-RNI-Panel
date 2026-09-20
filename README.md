@@ -4,7 +4,17 @@ A small, single-user Windows companion for Capture One: film search, favorites, 
 
 This is an independent helper, not an embedded Capture One plugin. Capture One and the RNI styles must already be installed and licensed. No vendor ICC profiles, styles, program files, catalog data, or photographs are included.
 
-## Current version: 0.6
+## Current version: 0.6.1
+
+### 0.6.1: native filename / XML-name mapping
+
+The user confirmed multi-photo Natura 1600 application and clearing, then reported `style-path-unavailable` for Portra 160 V.5 and Portra 400 V.2. C1's source tree displays the filename stem (`v5`, `v2`), while these files' XML names contain `V.5`, `V.2`. The old path builder incorrectly used XML Name for the source-tree leaf.
+
+This is fixed for the whole installed collection, not a Portra/version whitelist. A read-only metadata check found 1,248 of 1,680 styles have differing spellings, including version dots, capitalization, HC, HP5 and RSX. Source paths, checkboxes and cached source controls now use the exact filename stem; applied-list identification, confirmation and clearing accept the two exact names belonging to that indexed file. There is no punctuation-stripping or cross-version fuzzy match. XML-based family IDs remain unchanged to preserve favorites; search accepts both spellings.
+
+The hotfix compiles and passes 97 core checks, including all indexed paths/name aliases, the two reported films' four strengths and favorite-ID stability. Existing native diagnostics independently confirm the reported `v5`/`v2` labels. **The new hotfix has not been live-applied in C1 by the agent**; the user's accepted Natura flows are not repeated. The 0.6 live results below remain historical evidence, not a new 0.6.1 full regression.
+
+### 0.6 foundation
 
 The first requirement is a quick film-style entry point for Capture One: select photos, click a film strength, or clear the current RNI effect. Version 0.5 was not accepted as usable: its first visible-style observation timed out before any style command was sent. Version 0.6 addresses that reader and removes the eight-command execution limit. Implementation and live validation are recorded separately below.
 

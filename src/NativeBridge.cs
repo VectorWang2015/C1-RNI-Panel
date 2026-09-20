@@ -243,7 +243,7 @@ namespace RniPanel {
         }
         static string NameToken(string name){return "rni-name:"+name;}
         static IEnumerable<string> KnownStyleTokens(IEnumerable<StyleBinding> bindings) {
-            return bindings.Select(b=>b.Style.Uuid).Concat(bindings.Select(b=>NameToken(b.Style.Name))).Distinct(StringComparer.Ordinal);
+            return bindings.Select(b=>b.Style.Uuid).Concat(bindings.SelectMany(b=>b.Style.AppliedNames).Select(NameToken)).Distinct(StringComparer.Ordinal);
         }
         static void ClickNativeRow(AutomationElement row,Action finalGuard=null) {
             var bounds=row.Current.BoundingRectangle;
@@ -466,7 +466,7 @@ namespace RniPanel {
                     throw new StylesReadException("style-path-missing","样式没有完整原生路径，未发送。");
                 AutomationElement cached;
                 if(styleBoxes.TryGetValue(binding.Style.Uuid,out cached)) {
-                    try {if(cached.Current.Name==binding.Style.Name&&cached.Current.IsEnabled){Stage("prepare-style.cached");return cached;}}
+                    try {if(cached.Current.Name==binding.Style.NativeName&&cached.Current.IsEnabled){Stage("prepare-style.cached");return cached;}}
                     catch(ElementNotAvailableException){}
                     styleBoxes.Remove(binding.Style.Uuid);
                 }
@@ -499,7 +499,7 @@ namespace RniPanel {
                 }
                 Stage("prepare-style.checkbox.begin");
                 var boxes=item.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.AutomationIdProperty,"StyleCheckBox")).Cast<AutomationElement>()
-                    .Where(e=>e.Current.Name==binding.Style.Name).ToArray();
+                    .Where(e=>e.Current.Name==binding.Style.NativeName).ToArray();
                 if(boxes.Length!=1)throw new StylesReadException("style-checkbox-unavailable","原生样式没有唯一可操作的勾选控件："+binding.Style.Name+"。未发送。");
                 styleBoxes[binding.Style.Uuid]=boxes[0];Stage("prepare-style.ready");return boxes[0];
             }
@@ -513,7 +513,7 @@ namespace RniPanel {
                 Action guarded=()=>{OperationGuard();validate();OperationGuard();};
                 var names=Read();var identities=new List<string>();
                 foreach(string name in names) {
-                    var matches=bindings.Where(b=>b.Style.Name==name).ToArray();
+                    var matches=bindings.Where(b=>b.Style.MatchesAppliedName(name)).ToArray();
                     if(matches.Length==0){identities.Add("unmanaged:"+name);continue;}
                     // Do not expand every same-name candidate to discover its
                     // identity: freshly realized C1 leaves start unchecked anyway.
@@ -525,7 +525,7 @@ namespace RniPanel {
                         if(!styleBoxes.TryGetValue(match.Style.Uuid,out box))continue;
                         try {
                             guarded();
-                            if(box.Current.Name==name&&box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle)&&((TogglePattern)toggle).Current.ToggleState==ToggleState.On)
+                            if(box.Current.Name==match.Style.NativeName&&box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle)&&((TogglePattern)toggle).Current.ToggleState==ToggleState.On)
                                 checkedMatches.Add(match);
                         }catch(ElementNotAvailableException){styleBoxes.Remove(match.Style.Uuid);}
                     }
@@ -578,7 +578,7 @@ namespace RniPanel {
                 // workflow's final target check. A send never performs slow tree
                 // expansion and then acts on an old photo snapshot.
                 AutomationElement box;object toggle;
-                if(!styleBoxes.TryGetValue(binding.Style.Uuid,out box)||box.Current.Name!=binding.Style.Name||!box.Current.IsEnabled)
+                if(!styleBoxes.TryGetValue(binding.Style.Uuid,out box)||box.Current.Name!=binding.Style.NativeName||!box.Current.IsEnabled)
                     throw new StylesReadException("style-leaf-stale","已核对的原生样式控件失效，本次未发送；请重新点击。");
                 if(!box.TryGetCurrentPattern(TogglePattern.Pattern,out toggle))throw new StylesReadException("style-toggle-unavailable","原生样式不支持勾选操作，未发送。");
                 var state=((TogglePattern)toggle).Current.ToggleState;
@@ -690,7 +690,8 @@ namespace RniPanel {
             }
             bool ExpectedTransition(string[] identities) {
                 if(pendingRemovalName!=null) {
-                    if(identities.Any(id=>id==NameToken(pendingRemovalName)||clearBindings.Any(b=>b.Style.Uuid==id&&b.Style.Name==pendingRemovalName)))return false;
+                    var removed=clearBindings.Where(b=>b.Style.MatchesAppliedName(pendingRemovalName)).ToArray();
+                    if(identities.Any(id=>id==NameToken(pendingRemovalName)||removed.Any(b=>b.Style.Uuid==id||b.Style.AppliedNames.Any(n=>NameToken(n)==id))))return false;
                 }
                 return !appliedRequested||(identities.Length==1&&identities[0]==binding.Style.Uuid);
             }
@@ -722,7 +723,7 @@ namespace RniPanel {
                         // This is transaction evidence, not remembered identity:
                         // after this session invoked an exact catalog path, the
                         // new native row confirms that issued style's display name.
-                        if(appliedRequested&&observed.Length==1&&observed[0]==NameToken(binding.Style.Name))observed[0]=binding.Style.Uuid;
+                        if(appliedRequested&&observed.Length==1&&binding.Style.AppliedNames.Any(n=>observed[0]==NameToken(n)))observed[0]=binding.Style.Uuid;
                         return observed;
                     });}
                     catch(Exception e) {
@@ -780,7 +781,7 @@ namespace RniPanel {
                 string display;StyleBinding exact=null;
                 if(styleName.StartsWith("rni-name:",StringComparison.Ordinal)) {
                     display=styleName.Substring("rni-name:".Length);
-                    if(!clearBindings.Any(b=>b.Style.Name==display))throw new InvalidOperationException("样式名称不在 RNI 索引中，未清除。");
+                    if(!clearBindings.Any(b=>b.Style.MatchesAppliedName(display)))throw new InvalidOperationException("样式名称不在 RNI 索引中，未清除。");
                 } else {
                     var matches=clearBindings.Where(b=>String.Equals(b.Style.Uuid,styleName,StringComparison.Ordinal)).ToArray();
                     if(matches.Length!=1)throw new InvalidOperationException("当前样式没有唯一的已索引身份，未清除。");

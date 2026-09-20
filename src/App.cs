@@ -10,8 +10,8 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Web.Script.Serialization;
 
-[assembly:System.Reflection.AssemblyVersion("0.6.0.0")]
-[assembly:System.Reflection.AssemblyFileVersion("0.6.0.0")]
+[assembly:System.Reflection.AssemblyVersion("0.6.1.0")]
+[assembly:System.Reflection.AssemblyFileVersion("0.6.1.0")]
 
 namespace RniPanel {
     static class Program {
@@ -53,7 +53,7 @@ namespace RniPanel {
         string confirmedStyleUuid;
         bool busy,booting=true,setupAcknowledged;
         public PanelWindow() {
-            Text="RNI Palette · 0.6";Name="RniPaletteWindow";StartPosition=FormStartPosition.CenterScreen;
+            Text="RNI Palette · 0.6.1";Name="RniPaletteWindow";StartPosition=FormStartPosition.CenterScreen;
             Size=new Size(490,820);MinimumSize=new Size(440,640);BackColor=bg;ForeColor=ink;Font=new Font("Microsoft YaHei UI",9F);AutoScaleMode=AutoScaleMode.Dpi;
             store=new PreferencesStore(PreferencesStore.SharedDirectory);
             try {store.ImportIfMissing(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"data","favorites.json"));preferences=store.Load();} catch(Exception e){preferences=new PanelPreferences();Shown+=(s,a)=>MessageBox.Show("收藏未加载；原文件保留。\n"+e.Message,"收藏文件检查");}
@@ -93,7 +93,7 @@ namespace RniPanel {
             Controls.Add(outer);
             var header=new Panel {Dock=DockStyle.Fill};outer.Controls.Add(header,0,0);
             var title=MakeLabel("RNI  /  PALETTE",33,ink,18F);title.Top=0;title.Dock=DockStyle.None;title.Width=360;header.Controls.Add(title);
-            var sub=MakeLabel("胶片收藏夹   ·   原生样式 / 清除 RNI 0.6",26,mute);sub.Dock=DockStyle.None;sub.Top=38;sub.Width=360;header.Controls.Add(sub);
+            var sub=MakeLabel("胶片收藏夹   ·   原生样式 / 清除 RNI 0.6.1",26,mute);sub.Dock=DockStyle.None;sub.Top=38;sub.Width=360;header.Controls.Add(sub);
             pin=new CheckBox {Text="置顶",Checked=preferences.TopMost,ForeColor=mute,Width=62,Height=28,Anchor=AnchorStyles.Top|AnchorStyles.Right,Left=350,Top=6};header.Controls.Add(pin);
             header.Resize+=(s,e)=>pin.Left=header.ClientSize.Width-62;
             pin.CheckedChanged+=(s,e)=>{TopMost=pin.Checked;preferences.TopMost=pin.Checked;Save();};
@@ -193,7 +193,7 @@ namespace RniPanel {
         void Record(string action,FilmStyle style,string message) {
             Directory.CreateDirectory(store.DirectoryPath);
             bool batchPhase=action=="phase"&&armedTarget!=null&&armedTarget.SelectedCount>1;
-            var record=new {at=DateTimeOffset.Now.ToString("o"),version="0.6",action=action,
+            var record=new {at=DateTimeOffset.Now.ToString("o"),version="0.6.1",action=action,
                 catalog=armedTarget==null?null:armedTarget.DocumentPath,variantId=batchPhase?(int?)null:armedId,
                 variantUuid=batchPhase||armedTarget==null?null:armedTarget.VariantUuid,
                 targetScope=batchPhase?"batch-phase-current-target-in-native-timing-log":"record-target",
@@ -331,7 +331,7 @@ namespace RniPanel {
             MessageBox.Show(this,text,"连接设置",MessageBoxButtons.OK,MessageBoxIcon.Information);
         }
         void ShowHelp() {
-            MessageBox.Show(this,"RNI Palette 0.6 — 快速套胶片 / 清除 RNI\n\n• 在 C1 选照片，连接时确认完整图库路径。\n• 在面板搜索胶片、收藏，点击25/50/75/100档位。\n• 全部已安装且 ICC 可用的样式均有原生树入口，不限 Portra。\n• 同一图库换照片不用重连；同档原生确认后不重复发送。\n• 多选先核对整组选区，再临时仅编辑主图、逐张应用/清除；成功后恢复原主图及编辑模式。\n• 批量中断会保留当前主图供检查，并报告已确认数量；不自动重试。\n• 清除仅移除已识别 RNI，保留其他样式/预设，不重置整图。\n• 应用不覆盖未知或混合样式；请先在 C1 核对。\n• 面板不主动跳工具页；原生树展开可能滚动样式工具。控件不可读取时停止，不假装空列表。\n• 这是 UI Automation＋原生操作的独立面板，不是官方样式业务 API；只读数据库核对照片身份。\n• 不改原片，不在线写库。自动连接仍需后续完善。\n\n收藏和日志："+store.DirectoryPath+"\n取消“启用连接”、按 Esc 或关闭面板可停止后续动作。","使用说明",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            MessageBox.Show(this,"RNI Palette 0.6.1 — 快速套胶片 / 清除 RNI\n\n• 在 C1 选照片，连接时确认完整图库路径。\n• 在面板搜索胶片、收藏，点击25/50/75/100档位。\n• 全部已安装且 ICC 可用的样式均有原生树入口，不限 Portra。\n• 原生定位使用文件名，回读识别同一文件的内部名/文件名；V.x 等差异无需改厂商样式。\n• 同一图库换照片不用重连；同档原生确认后不重复发送。\n• 多选先核对整组选区，再临时仅编辑主图、逐张应用/清除；成功后恢复原主图及编辑模式。\n• 批量中断会保留当前主图供检查，并报告已确认数量；不自动重试。\n• 清除仅移除已识别 RNI，保留其他样式/预设，不重置整图。\n• 应用不覆盖未知或混合样式；请先在 C1 核对。\n• 面板不主动跳工具页；原生树展开可能滚动样式工具。控件不可读取时停止，不假装空列表。\n• 这是 UI Automation＋原生操作的独立面板，不是官方样式业务 API；只读数据库核对照片身份。\n• 不改原片，不在线写库。自动连接仍需后续完善。\n\n收藏和日志："+store.DirectoryPath+"\n取消“启用连接”、按 Esc 或关闭面板可停止后续动作。","使用说明",MessageBoxButtons.OK,MessageBoxIcon.Information);
         }
     }
 }

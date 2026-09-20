@@ -84,7 +84,24 @@ static class Tests {
         var allBindings = Shortcuts.CreateBindings(catalog);
         Check(allBindings.Count==catalog.Families.Sum(f=>f.Styles.Count(s=>s.IccExists)),"every installed usable style has an execution binding");
         Check(allBindings.Select(b=>b.Style.Uuid).Distinct().Count()==allBindings.Count,"all source UUID identities remain distinct");
-        Check(allBindings.All(b=>b.NativePath!=null&&b.NativePath.Length>=3&&b.NativePath.Last()==b.Style.Name),"exact native hierarchy exists for every style");
+        Check(allBindings.All(b=>b.NativePath!=null&&b.NativePath.Length>=3&&b.NativePath.Last()==b.Style.NativeName),"native tree leaf uses the exact filename stem, not the XML name");
+        var differentNames=allBindings.Where(b=>b.Style.Name!=b.Style.NativeName).ToArray();
+        Check(differentNames.Length>0&&differentNames.All(b=>b.NativePath.Last()==Path.GetFileNameWithoutExtension(b.Style.Path)&&
+            b.Style.MatchesAppliedName(b.Style.Name)&&b.Style.MatchesAppliedName(b.Style.NativeName)),"all installed name mismatches use the same exact two-name mapping, not a Portra whitelist");
+        foreach(var naming in new[]{new[]{"Kodak Portra 160 V.5","Kodak Portra 160 v5"},new[]{"Kodak Portra 400 V.2","Kodak Portra 400 v2"}}) {
+            var family=catalog.Families.Single(f=>f.Name==naming[0]&&!f.Grain&&!f.Rendered);
+            Check(new[]{25,50,75,100}.All(level=>family.At(level).Name==naming[0]+" "+level+"%"&&
+                family.At(level).NativeName==naming[1]+" "+level+"%"&&family.At(level).NativePath.Last()==naming[1]+" "+level+"%"),"versioned Portra all four native leaves: "+naming[1]);
+            var versioned=family.At(100);
+            Check(versioned.MatchesAppliedName(naming[0]+" 100%")&&versioned.MatchesAppliedName(naming[1]+" 100%"),"versioned Portra readback accepts its two exact labels: "+naming[1]);
+            Check(!versioned.MatchesAppliedName(naming[1]+"0 100%")&&!versioned.MatchesAppliedName(naming[1]+" HC 100%"),"native aliases do not blur other versions or HC variants: "+naming[1]);
+            var legacyKey=Catalog.Normalize(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(versioned.Path)))+"|"+
+                Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(versioned.Path)))+"|"+family.Name);
+            Check(family.Id==Catalog.HashText(legacyKey).Substring(0,24),"XML family/favorite ID stays unchanged: "+naming[1]);
+            Check(family.Matches(naming[0])&&family.Matches(naming[1]),"search accepts XML and native version spelling: "+naming[1]);
+        }
+        var natura=catalog.Families.Single(f=>f.Name=="Fuji Natura 1600"&&!f.Grain&&!f.Rendered).At(100);
+        Check(natura.NativeName==natura.Name&&natura.AppliedNames.Count()==1,"accepted Natura naming is unchanged");
         Check(allBindings.GroupBy(b=>b.Style.Name).Where(g=>g.Count()>1).All(g=>g.Select(b=>String.Join("/",b.NativePath)).Distinct().Count()==g.Count()),"same-name standard/grain entries have different native paths");
         var nativeOnly=Shortcuts.CreateBindings(catalog,null);
         Check(nativeOnly.Count==allBindings.Count&&nativeOnly.All(b=>b.UsesNativeTree),"full catalog does not require a demo shortcut set");

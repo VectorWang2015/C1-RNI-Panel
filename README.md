@@ -10,6 +10,8 @@ This is an independent helper, not an embedded Capture One plugin. Capture One a
 
 **Test sandbox retired on 2026-09-20.** At the user's request, after C1 was closed, the temporary `qa/RNI-Panel-Sandbox` directory was moved to Windows Recycle Bin. No managed originals were inside; work photos/catalog, programs and preferences were untouched. Existing live results remain historical evidence. The ignored local test fixture now refers to an absent database and must not be used without deliberately provisioning a new authorized test environment. This cleanup did not change the accepted executable or release tag.
 
+**Final housekeeping:** obsolete debug/integration builds, scratch tests, one-off UI scripts and intermediate checkpoints were subsequently recycled at the user's request. The stale local fixture was also removed. Delivered releases, source, shared preferences, verification reports/native logs and essential catalog backups remain. No executable or release-tag changes were made. Do not interpret old test paths below as currently provisioned resources.
+
 ### 0.6.2: imported copies replace the built-in native path
 
 The user reproduced `style-path-unavailable` on 0.6.1. The version-name correction was necessary but insufficient: a live UIA inspection found that the requested leaves were absent from the built-in folder. Same-UUID copies existed in a custom favorites folder under `Styles50`. C1's library deduplicates by UUID and the loaded user copies appeared under **自定义样式 / User Styles**, not at the original built-in paths. All twelve local copies matched their original files' UUID and content. No files were moved or modified to resolve this.
